@@ -1,0 +1,1772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QAV250 Drone Ground Station</title>
+
+<!-- Three.js from CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<style>
+/* ──────────────────────────────────────────────────────────────
+   RESET & BASE THEME
+   ────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-primary:   #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary:  #21262d;
+  --border:       #30363d;
+  --text-primary: #e6edf3;
+  --text-secondary:#8b949e;
+  --accent:       #58a6ff;
+  --accent-dim:   #1f6feb;
+  --red:          #f85149;
+  --orange:       #d29922;
+  --green:        #3fb950;
+  --font-mono:    'Consolas', 'Menlo', 'Courier New', monospace;
+  --font-sans:    -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  overflow: hidden;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   LAYOUT – CSS Grid
+   ────────────────────────────────────────────────────────────── */
+#app {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  grid-template-rows: 1fr 64px;
+  height: 100vh;
+  gap: 1px;
+  background: var(--border);
+}
+
+/* Left panel: telemetry */
+#telemetry-panel {
+  grid-row: 1 / 3;
+  background: var(--bg-secondary);
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Center: 3D viewport */
+#viewport {
+  position: relative;
+  background: var(--bg-primary);
+  overflow: hidden;
+}
+
+/* Bottom bar: command input */
+#command-bar {
+  background: var(--bg-secondary);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 8px;
+  flex-wrap: nowrap;
+  overflow: visible;
+  position: relative;
+  z-index: 20;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   TELEMETRY PANEL
+   ────────────────────────────────────────────────────────────── */
+#telemetry-panel h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+
+.telem-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.telem-row {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 3px 0;
+}
+
+.telem-row .label { color: var(--text-secondary); }
+.telem-row .value { color: var(--text-primary); font-weight: 600; }
+.telem-row .value.armed-true  { color: var(--red); }
+.telem-row .value.armed-false { color: var(--green); }
+
+/* ──────────────────────────────────────────────────────────────
+   STATUS INDICATORS (top-right overlay)
+   ────────────────────────────────────────────────────────────── */
+#status-overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  z-index: 10;
+  pointer-events: none;
+}
+
+#flight-status {
+  width: 110px;
+  height: 110px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0,0,0,.6);
+  transition: background .3s, box-shadow .3s;
+  box-shadow: 0 0 30px rgba(0,0,0,.5);
+}
+
+#flight-status .status-label { font-size: 11px; opacity: .8; }
+#flight-status .status-text  { font-size: 15px; margin-top: 2px; }
+
+.status-ground  { background: var(--red);    box-shadow: 0 0 40px var(--red)    !important; }
+.status-moving  { background: var(--orange); box-shadow: 0 0 40px var(--orange) !important; }
+.status-static  { background: var(--green);  box-shadow: 0 0 40px var(--green)  !important; }
+
+#conn-status {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 4px 10px;
+  border-radius: 12px;
+  pointer-events: auto;
+}
+
+.conn-ok   { background: var(--green); color: #000; }
+.conn-fail { background: var(--red);   color: #fff; }
+.conn-sim  { background: var(--accent-dim); color: #fff; }
+
+/* ──────────────────────────────────────────────────────────────
+   CONTROLS OVERLAY (top-left of viewport)
+   ────────────────────────────────────────────────────────────── */
+#controls-overlay {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 10;
+}
+
+.ctrl-btn {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: background .15s;
+  pointer-events: auto;
+}
+
+.ctrl-btn:hover { background: var(--accent-dim); }
+.ctrl-btn.active { background: var(--accent-dim); border-color: var(--accent); }
+
+/* ──────────────────────────────────────────────────────────────
+   COMMAND BAR STYLES
+   ────────────────────────────────────────────────────────────── */
+#command-bar label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+#command-bar input[type="number"] {
+  width: 66px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 4px 6px;
+  text-align: center;
+}
+
+#command-bar input[type="number"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.cmd-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  transition: background .15s, opacity .15s;
+  white-space: nowrap;
+}
+
+.cmd-btn:hover { filter: brightness(1.2); }
+
+.cmd-btn-blue   { background: var(--accent-dim); color: #fff; }
+.cmd-btn-green  { background: #238636; color: #fff; }
+.cmd-btn-red    { background: #b62324; color: #fff; }
+.cmd-btn-orange { background: #9e6a03; color: #fff; }
+.cmd-btn-purple { background: #6e40c9; color: #fff; }
+
+.separator {
+  width: 1px;
+  height: 28px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   ROUTINE DROPDOWN MENU
+   ────────────────────────────────────────────────────────────── */
+.routine-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.routine-menu {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 0;
+  min-width: 200px;
+  z-index: 200;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+}
+
+.routine-menu.open { display: block; }
+
+.routine-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background .1s;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+}
+
+.routine-item:hover { background: var(--bg-tertiary); }
+
+.routine-item .ri-icon {
+  width: 18px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.routine-item .ri-name { flex: 1; }
+
+.routine-item .ri-info {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.routine-progress {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   SCROLLBAR STYLING
+   ────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ──────────────────────────────────────────────────────────────
+   CANVAS
+   ────────────────────────────────────────────────────────────── */
+#viewport canvas { display: block; }
+
+/* ──────────────────────────────────────────────────────────────
+   BATTERY BAR
+   ────────────────────────────────────────────────────────────── */
+.battery-bar-container {
+  width: 100%;
+  height: 8px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.battery-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width .3s, background .5s;
+}
+
+/* Mode badge */
+.mode-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--accent-dim);
+  color: #fff;
+}
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════════════
+     HTML STRUCTURE
+     ════════════════════════════════════════════════════════════ -->
+<div id="app">
+
+  <!-- ── LEFT PANEL: Telemetry ──────────────────────────────── -->
+  <div id="telemetry-panel">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+      </svg>
+      <span style="font-weight:700;font-size:15px;letter-spacing:.5px;">QAV250 GCS</span>
+    </div>
+
+    <!-- Position -->
+    <h2>Position (m)</h2>
+    <div class="telem-group">
+      <div class="telem-row"><span class="label">X</span><span class="value" id="t-x">—</span></div>
+      <div class="telem-row"><span class="label">Y</span><span class="value" id="t-y">—</span></div>
+      <div class="telem-row"><span class="label">Z</span><span class="value" id="t-z">—</span></div>
+    </div>
+
+    <!-- Velocity -->
+    <h2>Velocity (m/s)</h2>
+    <div class="telem-group">
+      <div class="telem-row"><span class="label">Vx</span><span class="value" id="t-vx">—</span></div>
+      <div class="telem-row"><span class="label">Vy</span><span class="value" id="t-vy">—</span></div>
+      <div class="telem-row"><span class="label">Vz</span><span class="value" id="t-vz">—</span></div>
+      <div class="telem-row"><span class="label">|V|</span><span class="value" id="t-speed">—</span></div>
+    </div>
+
+    <!-- Orientation -->
+    <h2>Orientation</h2>
+    <div class="telem-group">
+      <div class="telem-row"><span class="label">Roll</span><span class="value" id="t-roll">—</span></div>
+      <div class="telem-row"><span class="label">Pitch</span><span class="value" id="t-pitch">—</span></div>
+      <div class="telem-row"><span class="label">Yaw</span><span class="value" id="t-yaw">—</span></div>
+    </div>
+
+    <!-- State -->
+    <h2>State</h2>
+    <div class="telem-group">
+      <div class="telem-row"><span class="label">Armed</span><span class="value" id="t-armed">—</span></div>
+      <div class="telem-row"><span class="label">Mode</span><span class="value" id="t-mode">—</span></div>
+    </div>
+
+    <!-- Battery -->
+    <h2>Battery</h2>
+    <div class="telem-group">
+      <div class="telem-row"><span class="label">Voltage</span><span class="value" id="t-batt">—</span></div>
+      <div class="battery-bar-container">
+        <div class="battery-bar-fill" id="battery-bar" style="width:0%"></div>
+      </div>
+    </div>
+
+    <!-- Timestamps -->
+    <h2>Timing</h2>
+    <div class="telem-group">
+      <div class="telem-row"><span class="label">Hz</span><span class="value" id="t-hz">—</span></div>
+      <div class="telem-row"><span class="label">Latency</span><span class="value" id="t-latency">—</span></div>
+    </div>
+  </div>
+
+  <!-- ── CENTER: 3D Viewport ────────────────────────────────── -->
+  <div id="viewport">
+    <!-- Three.js canvas inserted here -->
+
+    <!-- Status indicators (top-right) -->
+    <div id="status-overlay">
+      <div id="flight-status" class="status-ground">
+        <span class="status-label">STATUS</span>
+        <span class="status-text" id="flight-status-text">GROUND</span>
+      </div>
+      <div id="conn-status" class="conn-fail">DISCONNECTED</div>
+    </div>
+
+    <!-- Controls (top-left) -->
+    <div id="controls-overlay">
+      <button class="ctrl-btn active" id="btn-trajectory" onclick="toggleTrajectory()">TRAIL ON</button>
+      <button class="ctrl-btn" id="btn-sim" onclick="toggleSimMode()">SIM OFF</button>
+      <button class="ctrl-btn" id="btn-reset-cam" onclick="resetCamera()">RESET CAM</button>
+    </div>
+  </div>
+
+  <!-- ── BOTTOM: Command bar ────────────────────────────────── -->
+  <div id="command-bar">
+    <!-- Flight commands -->
+    <button class="cmd-btn cmd-btn-green" id="btn-arm" onclick="cmdArm()">ARM</button>
+    <button class="cmd-btn cmd-btn-green" id="btn-takeoff" onclick="cmdTakeoff()">TAKEOFF</button>
+    <button class="cmd-btn cmd-btn-red" id="btn-land" onclick="cmdLand()">LAND</button>
+    <button class="cmd-btn cmd-btn-red" id="btn-disarm" onclick="cmdDisarm()">DISARM</button>
+
+    <div class="separator"></div>
+
+    <!-- Target coordinates -->
+    <label>X:</label><input type="number" id="cmd-x" value="0" step="0.1">
+    <label>Y:</label><input type="number" id="cmd-y" value="0" step="0.1">
+    <label>Z:</label><input type="number" id="cmd-z" value="1.0" step="0.1">
+    <button class="cmd-btn cmd-btn-blue" id="send-target" onclick="sendTarget()">GO TO</button>
+
+    <div class="separator"></div>
+
+    <!-- Routine preset courses -->
+    <div class="routine-wrapper" id="routine-wrapper">
+      <button class="cmd-btn cmd-btn-purple" onclick="toggleRoutineMenu()">ROUTINES ▲</button>
+      <div class="routine-menu" id="routine-menu">
+        <button class="routine-item" onclick="runRoutine('figure8')">
+          <span class="ri-icon">∞</span><span class="ri-name">Figure-8</span><span class="ri-info">8 pts</span>
+        </button>
+        <button class="routine-item" onclick="runRoutine('circle')">
+          <span class="ri-icon">○</span><span class="ri-name">Circle</span><span class="ri-info">12 pts</span>
+        </button>
+        <button class="routine-item" onclick="runRoutine('square')">
+          <span class="ri-icon">□</span><span class="ri-name">Square</span><span class="ri-info">4 pts</span>
+        </button>
+        <button class="routine-item" onclick="runRoutine('diamond')">
+          <span class="ri-icon">◇</span><span class="ri-name">Diamond</span><span class="ri-info">4 pts</span>
+        </button>
+        <button class="routine-item" onclick="runRoutine('helix')">
+          <span class="ri-icon">⌀</span><span class="ri-name">Helix Up/Down</span><span class="ri-info">16 pts</span>
+        </button>
+        <button class="routine-item" onclick="runRoutine('zigzag')">
+          <span class="ri-icon">⚡</span><span class="ri-name">Zig-Zag</span><span class="ri-info">8 pts</span>
+        </button>
+        <button class="routine-item" onclick="runRoutine('demo')">
+          <span class="ri-icon">★</span><span class="ri-name">Full Demo</span><span class="ri-info">24 pts</span>
+        </button>
+      </div>
+    </div>
+    <button class="cmd-btn cmd-btn-red" id="btn-stop-routine" onclick="stopRoutine()" style="display:none;">STOP</button>
+    <span class="routine-progress" id="routine-progress"></span>
+
+    <div class="separator"></div>
+    <label id="target-feedback" style="color:var(--accent);font-size:11px;"></label>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════════
+     JAVASCRIPT
+     ════════════════════════════════════════════════════════════ -->
+<script>
+"use strict";
+
+// ══════════════════════════════════════════════════════════════
+//  CONFIGURATION
+// ══════════════════════════════════════════════════════════════
+const CONFIG = {
+  wsUrl: `ws://${location.hostname || 'localhost'}:8000/ws`,
+  reconnectBaseDelay: 1000,
+  reconnectMaxDelay:  10000,
+  maxTrajectoryPoints: 1000,
+  simHz: 50,
+  batteryMin: 13.2,
+  batteryMax: 16.8,
+};
+
+// ══════════════════════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════════════════════
+let ws = null;
+let reconnectDelay = CONFIG.reconnectBaseDelay;
+let reconnectTimer = null;
+let simMode = false;
+let simInterval = null;
+let showTrajectory = true;
+let lastTelemetry = null;
+let targetPosition = null;
+
+// Rate measurement
+let msgCount = 0;
+let lastRateTime = performance.now();
+let currentHz = 0;
+
+// ══════════════════════════════════════════════════════════════
+//  THREE.JS SETUP
+// ══════════════════════════════════════════════════════════════
+const viewportEl = document.getElementById('viewport');
+
+const scene    = new THREE.Scene();
+const camera   = new THREE.PerspectiveCamera(55, 1, 0.1, 200);
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setClearColor(0x0d1117);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+viewportEl.insertBefore(renderer.domElement, viewportEl.firstChild);
+
+// ── Camera orbit state ──────────────────────────────────────
+let camTheta  = Math.PI / 4;
+let camPhi    = Math.PI / 5;
+let camRadius = 5;
+let camTarget = new THREE.Vector3(0, 0, 0.5);
+let isDragging = false;
+let lastMouse  = { x: 0, y: 0 };
+
+function updateCameraFromOrbit() {
+  camera.position.set(
+    camTarget.x + camRadius * Math.sin(camPhi) * Math.cos(camTheta),
+    camTarget.y + camRadius * Math.sin(camPhi) * Math.sin(camTheta),
+    camTarget.z + camRadius * Math.cos(camPhi)
+  );
+  camera.up.set(0, 0, 1);
+  camera.lookAt(camTarget);
+}
+
+viewportEl.addEventListener('mousedown', e => {
+  if (e.target.tagName === 'BUTTON') return;
+  isDragging = true;
+  lastMouse = { x: e.clientX, y: e.clientY };
+});
+window.addEventListener('mousemove', e => {
+  if (!isDragging) return;
+  const dx = e.clientX - lastMouse.x;
+  const dy = e.clientY - lastMouse.y;
+  camTheta -= dx * 0.005;
+  camPhi   = Math.max(0.05, Math.min(Math.PI / 2 - 0.01, camPhi - dy * 0.005));
+  lastMouse = { x: e.clientX, y: e.clientY };
+});
+window.addEventListener('mouseup', () => { isDragging = false; });
+viewportEl.addEventListener('wheel', e => {
+  e.preventDefault();
+  camRadius = Math.max(1.5, Math.min(30, camRadius + e.deltaY * 0.005));
+}, { passive: false });
+
+// ── Lights ───────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.85);
+dirLight.position.set(4, 4, 8);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.width = 1024;
+dirLight.shadow.mapSize.height = 1024;
+scene.add(dirLight);
+
+const fillLight = new THREE.DirectionalLight(0x8899ff, 0.25);
+fillLight.position.set(-3, -2, 3);
+scene.add(fillLight);
+
+// ── Grid (XY plane at z=0) ──────────────────────────────────
+const gridHelper = new THREE.GridHelper(20, 20, 0x30363d, 0x21262d);
+gridHelper.rotation.x = Math.PI / 2;
+scene.add(gridHelper);
+
+// ── Axes ─────────────────────────────────────────────────────
+const axesGroup = new THREE.Group();
+const axisLen = 1.5;
+function makeAxis(dir, color) {
+  const mat = new THREE.LineBasicMaterial({ color });
+  const geo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(dir[0] * axisLen, dir[1] * axisLen, dir[2] * axisLen)
+  ]);
+  return new THREE.Line(geo, mat);
+}
+axesGroup.add(makeAxis([1, 0, 0], 0xf85149));
+axesGroup.add(makeAxis([0, 1, 0], 0x3fb950));
+axesGroup.add(makeAxis([0, 0, 1], 0x58a6ff));
+scene.add(axesGroup);
+
+// ══════════════════════════════════════════════════════════════
+//  DRONE MODEL – Detailed QAV250
+//  - Two carbon plates (top & bottom) with standoffs
+//  - 4 diagonal arms with motors, bell housings, shafts
+//  - 4 propellers (2 blades each, CW/CCW colored)
+//  - Pixhawk FC, Raspberry Pi, battery pack
+//  - LEDs (red front, green rear)
+//  - Forward arrow indicator
+//  - Fake ground shadow
+// ══════════════════════════════════════════════════════════════
+const droneGroup = new THREE.Group();
+
+// ── Materials ────────────────────────────────────────────────
+const carbonMat = new THREE.MeshPhongMaterial({
+  color: 0x1a1a2e, specular: 0x333355, shininess: 80
+});
+const carbonMatDark = new THREE.MeshPhongMaterial({
+  color: 0x111122, specular: 0x222244, shininess: 60
+});
+const motorMat = new THREE.MeshPhongMaterial({
+  color: 0x888888, specular: 0xffffff, shininess: 100
+});
+const motorBellMat = new THREE.MeshPhongMaterial({
+  color: 0x2a2a3a, specular: 0x555577, shininess: 90
+});
+const propMatCW = new THREE.MeshPhongMaterial({
+  color: 0x3fb950, transparent: true, opacity: 0.35, side: THREE.DoubleSide
+});
+const propMatCCW = new THREE.MeshPhongMaterial({
+  color: 0x58a6ff, transparent: true, opacity: 0.35, side: THREE.DoubleSide
+});
+const pcbGreen = new THREE.MeshPhongMaterial({
+  color: 0x1a6b35, specular: 0x225533, shininess: 40
+});
+const fcMat = new THREE.MeshPhongMaterial({
+  color: 0x222233, specular: 0x444466, shininess: 60
+});
+const batteryMat = new THREE.MeshPhongMaterial({
+  color: 0x1a1a1a, specular: 0x333333, shininess: 30
+});
+const batteryLabelMat = new THREE.MeshPhongMaterial({
+  color: 0xd29922, specular: 0x443300, shininess: 20
+});
+
+// Dimensions (meters – roughly to scale for a 250mm-diagonal quad)
+const armLen   = 0.125;   // center to motor
+const armThick = 0.008;
+
+// ── Bottom plate ─────────────────────────────────────────────
+const bottomPlate = new THREE.Mesh(
+  new THREE.BoxGeometry(0.10, 0.10, 0.003), carbonMat
+);
+bottomPlate.position.z = -0.008;
+droneGroup.add(bottomPlate);
+
+// ── Top plate ────────────────────────────────────────────────
+const topPlate = new THREE.Mesh(
+  new THREE.BoxGeometry(0.09, 0.09, 0.003), carbonMatDark
+);
+topPlate.position.z = 0.008;
+droneGroup.add(topPlate);
+
+// ── Standoffs (4 corner posts) ───────────────────────────────
+const standoffMat = new THREE.MeshPhongMaterial({ color: 0x666688 });
+for (let sx = -1; sx <= 1; sx += 2) {
+  for (let sy = -1; sy <= 1; sy += 2) {
+    const post = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.003, 0.003, 0.013, 6), standoffMat
+    );
+    post.position.set(sx * 0.038, sy * 0.038, 0);
+    post.rotation.x = Math.PI / 2;
+    droneGroup.add(post);
+  }
+}
+
+// ── Arms, Motors, Propellers ─────────────────────────────────
+const armAngles = [Math.PI / 4, 3 * Math.PI / 4, 5 * Math.PI / 4, 7 * Math.PI / 4];
+const propMeshes = [];  // for spinning animation
+
+for (let i = 0; i < 4; i++) {
+  const angle = armAngles[i];
+  const ax = Math.cos(angle);
+  const ay = Math.sin(angle);
+  const mx = ax * armLen;
+  const my = ay * armLen;
+
+  // Arm tube
+  const arm = new THREE.Mesh(
+    new THREE.BoxGeometry(armLen * 2, armThick, armThick), carbonMat
+  );
+  arm.position.set(mx / 2, my / 2, 0);
+  arm.rotation.z = angle;
+  droneGroup.add(arm);
+
+  // Motor base
+  const motorBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.012, 0.014, 0.015, 12), motorMat
+  );
+  motorBase.position.set(mx, my, 0.010);
+  motorBase.rotation.x = Math.PI / 2;
+  droneGroup.add(motorBase);
+
+  // Motor bell
+  const bell = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.014, 0.012, 0.010, 12), motorBellMat
+  );
+  bell.position.set(mx, my, 0.022);
+  bell.rotation.x = Math.PI / 2;
+  droneGroup.add(bell);
+
+  // Shaft
+  const shaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.002, 0.002, 0.008, 6), motorMat
+  );
+  shaft.position.set(mx, my, 0.030);
+  shaft.rotation.x = Math.PI / 2;
+  droneGroup.add(shaft);
+
+  // Propeller (2 blades + hub)
+  const propGroup = new THREE.Group();
+  propGroup.position.set(mx, my, 0.034);
+
+  const bladeLen = 0.065;
+  const mat = (i % 2 === 0) ? propMatCW : propMatCCW;
+
+  const blade1 = new THREE.Mesh(
+    new THREE.BoxGeometry(bladeLen * 2, 0.012, 0.001), mat
+  );
+  propGroup.add(blade1);
+
+  const blade2 = new THREE.Mesh(
+    new THREE.BoxGeometry(0.012, bladeLen * 2, 0.001), mat
+  );
+  propGroup.add(blade2);
+
+  const hub = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.005, 0.005, 0.004, 8), motorBellMat
+  );
+  hub.rotation.x = Math.PI / 2;
+  propGroup.add(hub);
+
+  droneGroup.add(propGroup);
+  propMeshes.push({ group: propGroup, dir: (i % 2 === 0) ? 1 : -1 });
+
+  // LED (red in front, green in rear)
+  const ledColor = (i < 2) ? 0xf85149 : 0x3fb950;
+  const led = new THREE.Mesh(
+    new THREE.SphereGeometry(0.004, 8, 8),
+    new THREE.MeshBasicMaterial({ color: ledColor })
+  );
+  led.position.set(mx, my, -0.005);
+  droneGroup.add(led);
+}
+
+// ── Pixhawk FC ───────────────────────────────────────────────
+const pixhawk = new THREE.Mesh(
+  new THREE.BoxGeometry(0.035, 0.035, 0.010), fcMat
+);
+pixhawk.position.z = 0.015;
+droneGroup.add(pixhawk);
+
+const pixConn = new THREE.Mesh(
+  new THREE.BoxGeometry(0.006, 0.002, 0.004),
+  new THREE.MeshPhongMaterial({ color: 0xffffff })
+);
+pixConn.position.set(0.018, 0, 0.015);
+droneGroup.add(pixConn);
+
+// ── Raspberry Pi ─────────────────────────────────────────────
+const rpiBoard = new THREE.Mesh(
+  new THREE.BoxGeometry(0.056, 0.035, 0.002), pcbGreen
+);
+rpiBoard.position.set(0, 0, 0.028);
+droneGroup.add(rpiBoard);
+
+const rpiCpu = new THREE.Mesh(
+  new THREE.BoxGeometry(0.012, 0.012, 0.004),
+  new THREE.MeshPhongMaterial({ color: 0xaaaacc, specular: 0xffffff, shininess: 120 })
+);
+rpiCpu.position.set(-0.005, 0, 0.031);
+droneGroup.add(rpiCpu);
+
+const rpiPort1 = new THREE.Mesh(
+  new THREE.BoxGeometry(0.008, 0.006, 0.006),
+  new THREE.MeshPhongMaterial({ color: 0x888888, shininess: 80 })
+);
+rpiPort1.position.set(0.030, 0.008, 0.031);
+droneGroup.add(rpiPort1);
+
+const rpiPort2 = rpiPort1.clone();
+rpiPort2.position.set(0.030, -0.006, 0.031);
+droneGroup.add(rpiPort2);
+
+// ── Battery ──────────────────────────────────────────────────
+const battery = new THREE.Mesh(
+  new THREE.BoxGeometry(0.070, 0.034, 0.022), batteryMat
+);
+battery.position.z = -0.022;
+droneGroup.add(battery);
+
+const battLabel = new THREE.Mesh(
+  new THREE.BoxGeometry(0.040, 0.035, 0.001), batteryLabelMat
+);
+battLabel.position.z = -0.011;
+droneGroup.add(battLabel);
+
+// ── Forward arrow ────────────────────────────────────────────
+const arrowShape = new THREE.Shape();
+arrowShape.moveTo(0, 0);
+arrowShape.lineTo(-0.012, 0.006);
+arrowShape.lineTo(-0.012, -0.006);
+arrowShape.closePath();
+const arrowGeo = new THREE.ExtrudeGeometry(arrowShape, {
+  depth: 0.002, bevelEnabled: false
+});
+const arrowMesh = new THREE.Mesh(arrowGeo,
+  new THREE.MeshPhongMaterial({ color: 0xf85149, emissive: 0x661111 })
+);
+arrowMesh.position.set(0.055, 0, 0.009);
+arrowMesh.rotation.y = Math.PI / 2;
+droneGroup.add(arrowMesh);
+
+// ── Ground shadow ────────────────────────────────────────────
+const shadowGeo = new THREE.CircleGeometry(0.12, 24);
+const shadowMat = new THREE.MeshBasicMaterial({
+  color: 0x000000, transparent: true, opacity: 0.25, side: THREE.DoubleSide
+});
+const shadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
+shadowMesh.rotation.x = Math.PI / 2;
+scene.add(shadowMesh);
+
+scene.add(droneGroup);
+
+// ── Trajectory line ──────────────────────────────────────────
+const trajectoryPositions = [];
+const trajectoryGeo = new THREE.BufferGeometry();
+const trajectoryMat = new THREE.LineBasicMaterial({
+  color: 0x58a6ff, transparent: true, opacity: 0.5
+});
+const trajectoryLine = new THREE.Line(trajectoryGeo, trajectoryMat);
+scene.add(trajectoryLine);
+
+function addTrajectoryPoint(x, y, z) {
+  trajectoryPositions.push(x, y, z);
+  while (trajectoryPositions.length > CONFIG.maxTrajectoryPoints * 3) {
+    trajectoryPositions.splice(0, 3);
+  }
+  trajectoryGeo.setAttribute('position',
+    new THREE.Float32BufferAttribute(trajectoryPositions, 3));
+  trajectoryGeo.computeBoundingSphere();
+}
+
+function clearTrajectory() {
+  trajectoryPositions.length = 0;
+  trajectoryGeo.deleteAttribute('position');
+}
+
+// ── Target marker ────────────────────────────────────────────
+const targetMarkerGroup = new THREE.Group();
+targetMarkerGroup.visible = false;
+
+const tmSphereMat = new THREE.MeshPhongMaterial({
+  color: 0xd29922, transparent: true, opacity: 0.5, emissive: 0x5a3f00
+});
+targetMarkerGroup.add(new THREE.Mesh(
+  new THREE.SphereGeometry(0.06, 16, 16), tmSphereMat
+));
+
+const tmRingMat = new THREE.MeshBasicMaterial({
+  color: 0xd29922, transparent: true, opacity: 0.6, side: THREE.DoubleSide
+});
+const tmRing = new THREE.Mesh(
+  new THREE.RingGeometry(0.08, 0.1, 32), tmRingMat
+);
+tmRing.rotation.x = Math.PI / 2;
+targetMarkerGroup.add(tmRing);
+
+const tmLineGeo = new THREE.BufferGeometry();
+const tmLineMat = new THREE.LineDashedMaterial({
+  color: 0xd29922, dashSize: 0.05, gapSize: 0.05
+});
+const tmLine = new THREE.Line(tmLineGeo, tmLineMat);
+targetMarkerGroup.add(tmLine);
+scene.add(targetMarkerGroup);
+
+function updateTargetMarker(x, y, z) {
+  targetMarkerGroup.position.set(x, y, z);
+  targetMarkerGroup.visible = true;
+  const pts = [new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -z)];
+  tmLineGeo.setFromPoints(pts);
+  tmLine.computeLineDistances();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  RESIZE HANDLER
+// ══════════════════════════════════════════════════════════════
+function onResize() {
+  const w = viewportEl.clientWidth;
+  const h = viewportEl.clientHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+window.addEventListener('resize', onResize);
+
+// ══════════════════════════════════════════════════════════════
+//  UI HELPERS
+// ══════════════════════════════════════════════════════════════
+const $ = id => document.getElementById(id);
+function fmt(v, d = 3) { return v == null ? '—' : v.toFixed(d); }
+
+function quatToEuler(qx, qy, qz, qw) {
+  const sinr_cosp = 2 * (qw * qx + qy * qz);
+  const cosr_cosp = 1 - 2 * (qx * qx + qy * qy);
+  const roll = Math.atan2(sinr_cosp, cosr_cosp);
+  let sinp = 2 * (qw * qy - qz * qx);
+  sinp = Math.max(-1, Math.min(1, sinp));
+  const pitch = Math.asin(sinp);
+  const siny_cosp = 2 * (qw * qz + qx * qy);
+  const cosy_cosp = 1 - 2 * (qy * qy + qz * qz);
+  const yaw = Math.atan2(siny_cosp, cosy_cosp);
+  const r2d = 180 / Math.PI;
+  return { roll: roll * r2d, pitch: pitch * r2d, yaw: yaw * r2d };
+}
+
+// ══════════════════════════════════════════════════════════════
+//  TELEMETRY PROCESSING
+// ══════════════════════════════════════════════════════════════
+function processTelemetry(data) {
+  lastTelemetry = data;
+
+  msgCount++;
+  const now = performance.now();
+  if (now - lastRateTime >= 1000) {
+    currentHz = msgCount / ((now - lastRateTime) / 1000);
+    msgCount = 0;
+    lastRateTime = now;
+  }
+
+  const p = data.position;
+  const v = data.velocity;
+  const o = data.orientation;
+  const speed = Math.sqrt(v.vx ** 2 + v.vy ** 2 + v.vz ** 2);
+  const euler = quatToEuler(o.qx, o.qy, o.qz, o.qw);
+
+  $('t-x').textContent  = fmt(p.x);
+  $('t-y').textContent  = fmt(p.y);
+  $('t-z').textContent  = fmt(p.z);
+  $('t-vx').textContent = fmt(v.vx, 4);
+  $('t-vy').textContent = fmt(v.vy, 4);
+  $('t-vz').textContent = fmt(v.vz, 4);
+  $('t-speed').textContent = fmt(speed, 4);
+  $('t-roll').textContent  = fmt(euler.roll, 1) + '°';
+  $('t-pitch').textContent = fmt(euler.pitch, 1) + '°';
+  $('t-yaw').textContent   = fmt(euler.yaw, 1) + '°';
+
+  const armedEl = $('t-armed');
+  armedEl.textContent = data.armed ? 'YES' : 'NO';
+  armedEl.className = 'value ' + (data.armed ? 'armed-true' : 'armed-false');
+  $('t-mode').innerHTML = `<span class="mode-badge">${data.mode}</span>`;
+
+  const batt = data.battery;
+  $('t-batt').textContent = fmt(batt, 2) + ' V';
+  const battPct = Math.max(0, Math.min(100,
+    ((batt - CONFIG.batteryMin) / (CONFIG.batteryMax - CONFIG.batteryMin)) * 100));
+  const battBar = $('battery-bar');
+  battBar.style.width = battPct + '%';
+  battBar.style.background = battPct < 20 ? 'var(--red)' :
+                              battPct < 50 ? 'var(--orange)' : 'var(--green)';
+
+  $('t-hz').textContent = currentHz.toFixed(1);
+  const latency = data.timestamp
+    ? ((Date.now() / 1000 - data.timestamp) * 1000).toFixed(0) : '—';
+  $('t-latency').textContent = latency + ' ms';
+
+  // Status indicator
+  const statusEl = $('flight-status');
+  const statusTextEl = $('flight-status-text');
+  statusEl.classList.remove('status-ground', 'status-moving', 'status-static');
+  if (p.z < 0.1) {
+    statusEl.classList.add('status-ground');
+    statusTextEl.textContent = 'GROUND';
+  } else if (speed > 0.05) {
+    statusEl.classList.add('status-moving');
+    statusTextEl.textContent = 'MOVING';
+  } else {
+    statusEl.classList.add('status-static');
+    statusTextEl.textContent = 'HOVER';
+  }
+
+  // Update 3D drone
+  droneGroup.position.set(p.x, p.y, p.z);
+  droneGroup.quaternion.set(o.qx, o.qy, o.qz, o.qw);
+
+  // Shadow follows XY on the ground
+  shadowMesh.position.set(p.x, p.y, 0.001);
+  const shadowScale = Math.max(0.3, 1.0 - p.z * 0.3);
+  shadowMesh.scale.set(shadowScale, shadowScale, 1);
+  shadowMat.opacity = Math.max(0.05, 0.25 - p.z * 0.08);
+
+  // Trajectory
+  addTrajectoryPoint(p.x, p.y, p.z);
+  trajectoryLine.visible = showTrajectory;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  WEBSOCKET CONNECTION
+// ══════════════════════════════════════════════════════════════
+function connectWs() {
+  if (simMode) return;
+
+  const connEl = $('conn-status');
+  try {
+    ws = new WebSocket(CONFIG.wsUrl);
+  } catch (e) {
+    scheduleReconnect();
+    return;
+  }
+
+  ws.onopen = () => {
+    connEl.className = 'conn-ok';
+    connEl.textContent = 'CONNECTED';
+    reconnectDelay = CONFIG.reconnectBaseDelay;
+  };
+
+  ws.onmessage = evt => {
+    try {
+      const data = JSON.parse(evt.data);
+      processTelemetry(data);
+    } catch (e) {}
+  };
+
+  ws.onclose = () => {
+    connEl.className = 'conn-fail';
+    connEl.textContent = 'DISCONNECTED';
+    ws = null;
+    scheduleReconnect();
+  };
+
+  ws.onerror = () => { ws.close(); };
+}
+
+function scheduleReconnect() {
+  if (simMode) return;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    connectWs();
+    reconnectDelay = Math.min(reconnectDelay * 1.5, CONFIG.reconnectMaxDelay);
+  }, reconnectDelay);
+}
+
+function wsSend(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(obj));
+    return true;
+  }
+  return false;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  COMMANDS – ARM / DISARM / TAKEOFF / LAND / GO TO
+// ══════════════════════════════════════════════════════════════
+function feedback(msg) {
+  $('target-feedback').textContent = msg;
+}
+
+function cmdArm() {
+  if (simMode) {
+    sim.arm();
+    feedback('Armed (sim)');
+  } else {
+    feedback(wsSend({ command: 'arm' }) ? 'ARM sent' : 'Not connected');
+  }
+}
+
+function cmdDisarm() {
+  if (simMode) {
+    sim.disarm();
+    feedback('Disarmed (sim)');
+  } else {
+    feedback(wsSend({ command: 'disarm' }) ? 'DISARM sent' : 'Not connected');
+  }
+}
+
+function cmdTakeoff() {
+  const z = parseFloat($('cmd-z').value) || 1.0;
+  if (simMode) {
+    sim.takeoff(z);
+    feedback(`Takeoff z=${z.toFixed(1)} (sim)`);
+  } else {
+    feedback(wsSend({ command: 'takeoff', z }) ? `TAKEOFF z=${z.toFixed(1)}` : 'Not connected');
+  }
+}
+
+function cmdLand() {
+  if (simMode) {
+    sim.land();
+    feedback('Landing (sim)');
+  } else {
+    feedback(wsSend({ command: 'land' }) ? 'LAND sent' : 'Not connected');
+  }
+}
+
+function sendTarget() {
+  const x = parseFloat($('cmd-x').value) || 0;
+  const y = parseFloat($('cmd-y').value) || 0;
+  const z = parseFloat($('cmd-z').value) || 1;
+
+  targetPosition = { x, y, z };
+  updateTargetMarker(x, y, z);
+
+  if (simMode) {
+    sim.goTo(x, y, z);
+    feedback(`Go to (${x}, ${y}, ${z}) (sim)`);
+  } else {
+    const ok = wsSend({ command: 'set_target', x, y, z });
+    feedback(ok ? `Sent: ${x}, ${y}, ${z}` : 'Not connected — target shown locally');
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTINE ENGINE – Preset flight courses
+// ══════════════════════════════════════════════════════════════
+/*
+ * A routine is a sequence of waypoints [{x,y,z}, ...].
+ * The engine auto-executes: arm → takeoff → fly waypoints → land.
+ * Works in both sim mode and real mode (sends WS commands).
+ */
+let routineActive  = false;
+let routineWaypoints = [];
+let routineIndex   = 0;
+let routineCheckInterval = null;
+let routinePhase   = 'idle';   // idle | arming | takeoff | flying | landing
+
+// ── Route preview line in 3D ─────────────────────────────────
+const routePreviewGeo = new THREE.BufferGeometry();
+const routePreviewMat = new THREE.LineDashedMaterial({
+  color: 0x6e40c9, dashSize: 0.06, gapSize: 0.04,
+  transparent: true, opacity: 0.7
+});
+const routePreviewLine = new THREE.Line(routePreviewGeo, routePreviewMat);
+routePreviewLine.visible = false;
+scene.add(routePreviewLine);
+
+// Small spheres at each waypoint
+const routeWaypointMarkers = new THREE.Group();
+routeWaypointMarkers.visible = false;
+scene.add(routeWaypointMarkers);
+
+function showRoutePreview(waypoints) {
+  // Line
+  const pts = waypoints.map(w => new THREE.Vector3(w.x, w.y, w.z));
+  // Close the loop visually if first ≈ last
+  routePreviewGeo.setFromPoints(pts);
+  routePreviewLine.computeLineDistances();
+  routePreviewLine.visible = true;
+
+  // Waypoint markers
+  while (routeWaypointMarkers.children.length) {
+    routeWaypointMarkers.remove(routeWaypointMarkers.children[0]);
+  }
+  const wpMat = new THREE.MeshBasicMaterial({ color: 0x6e40c9, transparent: true, opacity: 0.6 });
+  const wpMatActive = new THREE.MeshBasicMaterial({ color: 0xd29922 });
+  for (let i = 0; i < waypoints.length; i++) {
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(0.03, 8, 8),
+      i === 0 ? wpMatActive : wpMat
+    );
+    sphere.position.set(waypoints[i].x, waypoints[i].y, waypoints[i].z);
+    routeWaypointMarkers.add(sphere);
+  }
+  routeWaypointMarkers.visible = true;
+}
+
+function updateRoutePreviewIndex(idx) {
+  const wpMat = new THREE.MeshBasicMaterial({ color: 0x6e40c9, transparent: true, opacity: 0.6 });
+  const wpMatDone = new THREE.MeshBasicMaterial({ color: 0x3fb950, transparent: true, opacity: 0.4 });
+  const wpMatActive = new THREE.MeshBasicMaterial({ color: 0xd29922 });
+  for (let i = 0; i < routeWaypointMarkers.children.length; i++) {
+    if (i < idx) routeWaypointMarkers.children[i].material = wpMatDone;
+    else if (i === idx) routeWaypointMarkers.children[i].material = wpMatActive;
+    else routeWaypointMarkers.children[i].material = wpMat;
+  }
+}
+
+function hideRoutePreview() {
+  routePreviewLine.visible = false;
+  routeWaypointMarkers.visible = false;
+}
+
+// ── Preset course generators ─────────────────────────────────
+const ROUTINES = {
+  figure8: {
+    name: 'Figure-8',
+    generate(alt = 1.0) {
+      const pts = [];
+      const N = 16;
+      const A = 1.5, B = 1.0;
+      for (let i = 0; i <= N; i++) {
+        const t = (i / N) * 2 * Math.PI;
+        pts.push({ x: A * Math.sin(t), y: B * Math.sin(2 * t), z: alt });
+      }
+      return pts;
+    }
+  },
+
+  circle: {
+    name: 'Circle',
+    generate(alt = 1.0) {
+      const pts = [];
+      const N = 12;
+      const R = 1.5;
+      for (let i = 0; i <= N; i++) {
+        const t = (i / N) * 2 * Math.PI;
+        pts.push({ x: R * Math.cos(t), y: R * Math.sin(t), z: alt });
+      }
+      return pts;
+    }
+  },
+
+  square: {
+    name: 'Square',
+    generate(alt = 1.0) {
+      const S = 1.2;
+      return [
+        { x:  S, y:  S, z: alt },
+        { x: -S, y:  S, z: alt },
+        { x: -S, y: -S, z: alt },
+        { x:  S, y: -S, z: alt },
+        { x:  S, y:  S, z: alt },
+      ];
+    }
+  },
+
+  diamond: {
+    name: 'Diamond',
+    generate(alt = 1.0) {
+      const D = 1.8;
+      return [
+        { x: D, y: 0, z: alt },
+        { x: 0, y: D, z: alt },
+        { x:-D, y: 0, z: alt },
+        { x: 0, y:-D, z: alt },
+        { x: D, y: 0, z: alt },
+      ];
+    }
+  },
+
+  helix: {
+    name: 'Helix Up/Down',
+    generate() {
+      const pts = [];
+      const N = 8;
+      const R = 1.2;
+      // Spiral up
+      for (let i = 0; i <= N; i++) {
+        const t = (i / N) * 2 * Math.PI;
+        const z = 0.5 + (i / N) * 1.5;
+        pts.push({ x: R * Math.cos(t), y: R * Math.sin(t), z });
+      }
+      // Spiral down
+      for (let i = N; i >= 0; i--) {
+        const t = (i / N) * 2 * Math.PI + Math.PI;
+        const z = 0.5 + (i / N) * 1.5;
+        pts.push({ x: R * Math.cos(t), y: R * Math.sin(t), z });
+      }
+      return pts;
+    }
+  },
+
+  zigzag: {
+    name: 'Zig-Zag',
+    generate(alt = 1.0) {
+      const pts = [];
+      const N = 8;
+      const W = 2.0, D = 0.5;
+      for (let i = 0; i < N; i++) {
+        const xDir = (i % 2 === 0) ? 1 : -1;
+        pts.push({ x: xDir * W / 2, y: (i - N / 2) * D, z: alt });
+      }
+      pts.push({ x: 0, y: 0, z: alt }); // return to center
+      return pts;
+    }
+  },
+
+  demo: {
+    name: 'Full Demo',
+    generate() {
+      // Combines several patterns into one extended demo
+      const pts = [];
+      // Phase 1: Square at z=0.8
+      const S = 1.0;
+      pts.push({ x: S, y: S, z: 0.8 }, { x:-S, y: S, z: 0.8 },
+               { x:-S, y:-S, z: 0.8 }, { x: S, y:-S, z: 0.8 });
+      // Phase 2: Rise to z=1.5, figure-8
+      const A = 1.5, B = 1.0;
+      for (let i = 0; i <= 8; i++) {
+        const t = (i / 8) * 2 * Math.PI;
+        pts.push({ x: A * Math.sin(t), y: B * Math.sin(2 * t), z: 1.5 });
+      }
+      // Phase 3: Helix down
+      const R = 1.0;
+      for (let i = 0; i <= 8; i++) {
+        const t = (i / 8) * 2 * Math.PI;
+        const z = 1.5 - (i / 8) * 0.8;
+        pts.push({ x: R * Math.cos(t), y: R * Math.sin(t), z });
+      }
+      // Phase 4: Return to origin
+      pts.push({ x: 0, y: 0, z: 1.0 });
+      return pts;
+    }
+  },
+};
+
+// ── Routine execution ────────────────────────────────────────
+function runRoutine(name) {
+  closeRoutineMenu();
+
+  if (!simMode && (!ws || ws.readyState !== WebSocket.OPEN)) {
+    feedback('Connect or enable SIM mode first');
+    return;
+  }
+
+  const routine = ROUTINES[name];
+  if (!routine) return;
+
+  const alt = parseFloat($('cmd-z').value) || 1.0;
+  routineWaypoints = routine.generate(alt);
+  routineIndex = 0;
+  routineActive = true;
+  routinePhase = 'arming';
+
+  // Show preview & UI
+  showRoutePreview(routineWaypoints);
+  $('btn-stop-routine').style.display = '';
+  updateRoutineProgress();
+  feedback(`Routine: ${routine.name} (${routineWaypoints.length} waypoints)`);
+
+  // Start auto-sequence
+  clearInterval(routineCheckInterval);
+  routineCheckInterval = setInterval(routineTick, 200);
+
+  // Kick off arming immediately
+  if (simMode) sim.arm();
+  else wsSend({ command: 'arm' });
+}
+
+function routineTick() {
+  if (!routineActive) { clearInterval(routineCheckInterval); return; }
+
+  const telem = lastTelemetry;
+  if (!telem) return;
+
+  const p = telem.position;
+
+  switch (routinePhase) {
+    case 'arming':
+      // Wait for armed
+      if (telem.armed) {
+        routinePhase = 'takeoff';
+        const firstZ = routineWaypoints[0] ? routineWaypoints[0].z : 1.0;
+        if (simMode) sim.takeoff(firstZ);
+        else wsSend({ command: 'takeoff', z: firstZ });
+      }
+      break;
+
+    case 'takeoff':
+      // Wait until airborne (z > 0.3)
+      if (p.z > 0.3) {
+        routinePhase = 'flying';
+        routineIndex = 0;
+        sendRoutineWaypoint();
+      }
+      break;
+
+    case 'flying': {
+      const wp = routineWaypoints[routineIndex];
+      if (!wp) { routinePhase = 'landing'; break; }
+
+      // Check if we've reached the current waypoint
+      const dx = wp.x - p.x, dy = wp.y - p.y, dz = wp.z - p.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+      if (dist < 0.08) {
+        routineIndex++;
+        updateRoutePreviewIndex(routineIndex);
+        updateRoutineProgress();
+
+        if (routineIndex >= routineWaypoints.length) {
+          // All waypoints done → land
+          routinePhase = 'landing';
+          if (simMode) sim.land();
+          else wsSend({ command: 'land' });
+          feedback('Routine complete — landing');
+        } else {
+          sendRoutineWaypoint();
+        }
+      }
+      break;
+    }
+
+    case 'landing':
+      if (p.z < 0.05) {
+        finishRoutine();
+        feedback('Routine finished');
+      }
+      break;
+  }
+}
+
+function sendRoutineWaypoint() {
+  const wp = routineWaypoints[routineIndex];
+  if (!wp) return;
+
+  updateTargetMarker(wp.x, wp.y, wp.z);
+
+  if (simMode) {
+    sim.goTo(wp.x, wp.y, wp.z);
+  } else {
+    wsSend({ command: 'set_target', x: wp.x, y: wp.y, z: wp.z });
+  }
+
+  feedback(`WP ${routineIndex + 1}/${routineWaypoints.length}: (${wp.x.toFixed(1)}, ${wp.y.toFixed(1)}, ${wp.z.toFixed(1)})`);
+}
+
+function stopRoutine() {
+  if (!routineActive) return;
+  routineActive = false;
+  clearInterval(routineCheckInterval);
+  routinePhase = 'idle';
+  hideRoutePreview();
+
+  $('btn-stop-routine').style.display = 'none';
+  $('routine-progress').textContent = '';
+  targetMarkerGroup.visible = false;
+
+  // Hover in place (don't crash)
+  if (simMode && lastTelemetry && lastTelemetry.position.z > 0.1) {
+    sim.goTo(sim.pos.x, sim.pos.y, sim.pos.z);
+  }
+
+  feedback('Routine stopped');
+}
+
+function finishRoutine() {
+  routineActive = false;
+  clearInterval(routineCheckInterval);
+  routinePhase = 'idle';
+  hideRoutePreview();
+  $('btn-stop-routine').style.display = 'none';
+  $('routine-progress').textContent = '';
+}
+
+function updateRoutineProgress() {
+  const total = routineWaypoints.length;
+  $('routine-progress').textContent =
+    `WP ${Math.min(routineIndex + 1, total)}/${total}`;
+}
+
+// ── Dropdown menu ────────────────────────────────────────────
+function toggleRoutineMenu() {
+  const menu = $('routine-menu');
+  menu.classList.toggle('open');
+}
+
+function closeRoutineMenu() {
+  $('routine-menu').classList.remove('open');
+}
+
+// Close menu when clicking outside
+document.addEventListener('click', e => {
+  const wrapper = $('routine-wrapper');
+  if (!wrapper.contains(e.target)) closeRoutineMenu();
+});
+
+// ══════════════════════════════════════════════════════════════
+//  UI TOGGLES
+// ══════════════════════════════════════════════════════════════
+function toggleTrajectory() {
+  showTrajectory = !showTrajectory;
+  const btn = $('btn-trajectory');
+  btn.textContent = showTrajectory ? 'TRAIL ON' : 'TRAIL OFF';
+  btn.classList.toggle('active', showTrajectory);
+  trajectoryLine.visible = showTrajectory;
+}
+
+function toggleSimMode() {
+  simMode = !simMode;
+  const btn = $('btn-sim');
+  btn.textContent = simMode ? 'SIM ON' : 'SIM OFF';
+  btn.classList.toggle('active', simMode);
+
+  const connEl = $('conn-status');
+
+  if (simMode) {
+    if (ws) { ws.onclose = null; ws.close(); ws = null; }
+    clearTimeout(reconnectTimer);
+    connEl.className = 'conn-sim';
+    connEl.textContent = 'SIM MODE';
+    clearTrajectory();
+    stopRoutine();
+    sim.reset();
+    startSimulation();
+    feedback('Sim mode ON — use ARM → TAKEOFF to fly');
+  } else {
+    stopSimulation();
+    connEl.className = 'conn-fail';
+    connEl.textContent = 'DISCONNECTED';
+    connectWs();
+    feedback('Sim mode OFF');
+  }
+}
+
+function resetCamera() {
+  camTheta = Math.PI / 4;
+  camPhi = Math.PI / 5;
+  camRadius = 5;
+  camTarget.set(0, 0, 0.5);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  SIMULATION ENGINE – Interactive state machine
+// ══════════════════════════════════════════════════════════════
+/*
+ * States:
+ *   DISARMED    – on ground, motors off
+ *   ARMED       – on ground, motors idle
+ *   TAKING_OFF  – ascending to target altitude
+ *   HOVERING    – holding position in air
+ *   MOVING      – flying towards a waypoint
+ *   LANDING     – descending to ground
+ *
+ * The user drives all transitions via buttons:
+ *   ARM → TAKEOFF → (hover / GO TO / LAND) → DISARM
+ */
+const sim = {
+  state:   'DISARMED',
+  pos:     { x: 0, y: 0, z: 0 },
+  vel:     { x: 0, y: 0, z: 0 },
+  yaw:     0,
+  target:  { x: 0, y: 0, z: 1.0 },
+  battery: CONFIG.batteryMax,
+  armed:   false,
+
+  // Physics tuning
+  maxSpeed:  0.8,
+  maxAccel:  1.5,
+  hoverTol:  0.02,
+
+  reset() {
+    this.state   = 'DISARMED';
+    this.pos     = { x: 0, y: 0, z: 0 };
+    this.vel     = { x: 0, y: 0, z: 0 };
+    this.yaw     = 0;
+    this.target  = { x: 0, y: 0, z: 1.0 };
+    this.battery = CONFIG.batteryMax;
+    this.armed   = false;
+  },
+
+  // ── Commands ───────────────────────────────────────────────
+  arm() {
+    if (this.state === 'DISARMED') {
+      this.state = 'ARMED';
+      this.armed = true;
+    }
+  },
+
+  disarm() {
+    if (this.state === 'ARMED' || this.state === 'DISARMED') {
+      this.state = 'DISARMED';
+      this.armed = false;
+      this.vel = { x: 0, y: 0, z: 0 };
+    }
+  },
+
+  takeoff(z) {
+    if (this.state === 'ARMED' || this.state === 'HOVERING') {
+      this.target = { x: this.pos.x, y: this.pos.y, z: z || 1.0 };
+      this.state  = 'TAKING_OFF';
+    }
+  },
+
+  land() {
+    if (['HOVERING', 'MOVING', 'TAKING_OFF'].includes(this.state)) {
+      this.target = { x: this.pos.x, y: this.pos.y, z: 0 };
+      this.state  = 'LANDING';
+    }
+  },
+
+  goTo(x, y, z) {
+    if (['HOVERING', 'MOVING', 'TAKING_OFF'].includes(this.state)) {
+      this.target = { x, y, z };
+      this.state  = 'MOVING';
+    }
+  },
+
+  // ── Physics step (called at simHz) ─────────────────────────
+  step(dt) {
+    const p = this.pos;
+    const v = this.vel;
+    const t = this.target;
+
+    switch (this.state) {
+      case 'DISARMED':
+      case 'ARMED':
+        p.z = 0;
+        v.x = 0; v.y = 0; v.z = 0;
+        break;
+
+      case 'TAKING_OFF':
+      case 'MOVING':
+      case 'LANDING': {
+        const dx = t.x - p.x;
+        const dy = t.y - p.y;
+        const dz = t.z - p.z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (dist < this.hoverTol) {
+          p.x = t.x; p.y = t.y; p.z = t.z;
+          v.x = 0; v.y = 0; v.z = 0;
+
+          if (this.state === 'LANDING') {
+            p.z = 0;
+            this.state = 'ARMED';
+          } else {
+            this.state = 'HOVERING';
+          }
+        } else {
+          const desiredSpeed = Math.min(this.maxSpeed,
+            Math.sqrt(2 * this.maxAccel * dist));
+          const nx = dx / dist;
+          const ny = dy / dist;
+          const nz = dz / dist;
+
+          const desVx = nx * desiredSpeed;
+          const desVy = ny * desiredSpeed;
+          const desVz = nz * desiredSpeed;
+
+          const errMag = Math.sqrt(
+            (desVx - v.x) ** 2 + (desVy - v.y) ** 2 + (desVz - v.z) ** 2);
+          const accelFactor = Math.min(1.0,
+            this.maxAccel * dt / Math.max(0.01, errMag));
+          v.x += (desVx - v.x) * accelFactor;
+          v.y += (desVy - v.y) * accelFactor;
+          v.z += (desVz - v.z) * accelFactor;
+
+          p.x += v.x * dt;
+          p.y += v.y * dt;
+          p.z += v.z * dt;
+          if (p.z < 0) { p.z = 0; v.z = 0; }
+
+          // Yaw follows horizontal velocity
+          const hSpd = Math.sqrt(v.x * v.x + v.y * v.y);
+          if (hSpd > 0.01) {
+            const tgtYaw = Math.atan2(v.y, v.x);
+            let dYaw = tgtYaw - this.yaw;
+            while (dYaw >  Math.PI) dYaw -= 2 * Math.PI;
+            while (dYaw < -Math.PI) dYaw += 2 * Math.PI;
+            this.yaw += dYaw * Math.min(1.0, 4.0 * dt);
+          }
+        }
+        break;
+      }
+
+      case 'HOVERING':
+        v.x *= 0.9; v.y *= 0.9; v.z *= 0.9;
+        break;
+    }
+
+    // Battery drain
+    const drainRate = this.armed ? 0.008 : 0.001;
+    this.battery -= dt * drainRate;
+    if (this.battery < CONFIG.batteryMin) this.battery = CONFIG.batteryMax;
+
+    // Orientation quaternion (yaw + roll/pitch tilt from velocity)
+    const qw = Math.cos(this.yaw / 2);
+    const qz = Math.sin(this.yaw / 2);
+
+    const rollA  = -v.y * 0.18;
+    const pitchA =  v.x * 0.18;
+    const cr = Math.cos(rollA / 2),  sr = Math.sin(rollA / 2);
+    const cp = Math.cos(pitchA / 2), sp = Math.sin(pitchA / 2);
+
+    const fqw = qw * cp * cr + qz * sp * sr;
+    const fqx = qw * cp * sr - qz * sp * cr;
+    const fqy = qw * sp * cr + qz * cp * sr;
+    const fqz = qz * cp * cr - qw * sp * sr;
+
+    let mode = 'STABILIZE';
+    if (['TAKING_OFF', 'MOVING', 'HOVERING'].includes(this.state)) mode = 'GUIDED';
+    else if (this.state === 'LANDING') mode = 'LAND';
+
+    return {
+      timestamp:   Date.now() / 1000,
+      position:    { x: p.x, y: p.y, z: p.z },
+      velocity:    { vx: v.x, vy: v.y, vz: v.z },
+      orientation: { qx: fqx, qy: fqy, qz: fqz, qw: fqw },
+      armed:  this.armed,
+      mode,
+      battery: this.battery,
+    };
+  }
+};
+
+function startSimulation() {
+  stopSimulation();
+  simInterval = setInterval(() => {
+    processTelemetry(sim.step(1 / CONFIG.simHz));
+  }, 1000 / CONFIG.simHz);
+}
+
+function stopSimulation() {
+  if (simInterval !== null) {
+    clearInterval(simInterval);
+    simInterval = null;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  RENDER LOOP
+// ══════════════════════════════════════════════════════════════
+function animate() {
+  requestAnimationFrame(animate);
+  updateCameraFromOrbit();
+
+  // Spin propellers when armed
+  const armed = lastTelemetry ? lastTelemetry.armed : false;
+  for (const p of propMeshes) {
+    if (armed) p.group.rotation.z += p.dir * 0.35;
+  }
+
+  // Pulse target marker
+  if (targetMarkerGroup.visible) {
+    const t = performance.now();
+    const scale = 1 + 0.2 * Math.sin(t * 0.004);
+    tmRing.scale.set(scale, scale, scale);
+    tmRingMat.opacity = 0.3 + 0.3 * Math.sin(t * 0.003);
+  }
+
+  renderer.render(scene, camera);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  INIT – no auto-sim; user activates manually via SIM button
+// ══════════════════════════════════════════════════════════════
+function init() {
+  onResize();
+  updateCameraFromOrbit();
+  connectWs();
+  animate();
+}
+
+init();
+</script>
+</body>
+</html>
