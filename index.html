@@ -503,7 +503,8 @@ html, body {
 //  CONFIGURATION
 // ══════════════════════════════════════════════════════════════
 const CONFIG = {
-  wsUrl: `ws://${location.hostname || 'localhost'}:8000/ws`,
+  qtmUrl: `http://${location.hostname || 'localhost'}:8080`,
+  qtmPollMs: 50,    // poll every 50ms (~20Hz)
   reconnectBaseDelay: 1000,
   reconnectMaxDelay:  10000,
   maxTrajectoryPoints: 1000,
@@ -523,6 +524,10 @@ let simInterval = null;
 let showTrajectory = true;
 let lastTelemetry = null;
 let targetPosition = null;
+let qtmPollTimer = null;
+let qtmConnected = false;
+let prevPosition = null;
+let prevTime = null;
 
 // Rate measurement
 let msgCount = 0;
@@ -939,8 +944,198 @@ function quatToEuler(qx, qy, qz, qw) {
   return { roll: roll * r2d, pitch: pitch * r2d, yaw: yaw * r2d };
 }
 
+// Convert 3x3 rotation matrix (row-major array of 3 arrays) to euler angles (degrees)
+function rotMatToEuler(m) {
+  // m = [[r00,r01,r02],[r10,r11,r12],[r20,r21,r22]]
+  const r2d = 180 / Math.PI;
+  const sy = Math.sqrt(m[0][0] * m[0][0] + m[1][0] * m[1][0]);
+  let roll, pitch, yaw;
+  if (sy > 1e-6) {
+    roll  = Math.atan2(m[2][1], m[2][2]);
+    pitch = Math.atan2(-m[2][0], sy);
+    yaw   = Math.atan2(m[1][0], m[0][0]);
+  } else {
+    roll  = Math.atan2(-m[1][2], m[1][1]);
+    pitch = Math.atan2(-m[2][0], sy);
+    yaw   = 0;
+  }
+  return { roll: roll * r2d, pitch: pitch * r2d, yaw: yaw * r2d };
+}
+
+// Convert 3x3 rotation matrix to quaternion {qx, qy, qz, qw}
+function rotMatToQuat(m) {
+  // m = [[r00,r01,r02],[r10,r11,r12],[r20,r21,r22]]
+  const r00 = m[0][0], r01 = m[0][1], r02 = m[0][2];
+  const r10 = m[1][0], r11 = m[1][1], r12 = m[1][2];
+  const r20 = m[2][0], r21 = m[2][1], r22 = m[2][2];
+  const trace = r00 + r11 + r22;
+  let qw, qx, qy, qz;
+  if (trace > 0) {
+    const s = 0.5 / Math.sqrt(trace + 1.0);
+    qw = 0.25 / s;
+    qx = (r21 - r12) * s;
+    qy = (r02 - r20) * s;
+    qz = (r10 - r01) * s;
+  } else if (r00 > r11 && r00 > r22) {
+    const s = 2.0 * Math.sqrt(1.0 + r00 - r11 - r22);
+    qw = (r21 - r12) / s;
+    qx = 0.25 * s;
+    qy = (r01 + r10) / s;
+    qz = (r02 + r20) / s;
+  } else if (r11 > r22) {
+    const s = 2.0 * Math.sqrt(1.0 + r11 - r00 - r22);
+    qw = (r02 - r20) / s;
+    qx = (r01 + r10) / s;
+    qy = 0.25 * s;
+    qz = (r12 + r21) / s;
+  } else {
+    const s = 2.0 * Math.sqrt(1.0 + r22 - r00 - r11);
+    qw = (r10 - r01) / s;
+    qx = (r02 + r20) / s;
+    qy = (r12 + r21) / s;
+    qz = 0.25 * s;
+  }
+  return { qx, qy, qz, qw };
+}
+
 // ══════════════════════════════════════════════════════════════
-//  TELEMETRY PROCESSING
+//  QTM DATA PROCESSING (from HTTP polling)
+// ══════════════════════════════════════════════════════════════
+function processQtmData(data) {
+  if (!data.position || !data.rotation) return;
+
+  const now = performance.now();
+
+  // Position (QTM gives mm, convert to meters)
+  const px = data.position.x / 1000;
+  const py = data.position.y / 1000;
+  const pz = data.position.z / 1000;
+
+  // Velocity estimation from position delta
+  let vx = 0, vy = 0, vz = 0;
+  if (prevPosition && prevTime) {
+    const dt = (now - prevTime) / 1000;
+    if (dt > 0 && dt < 1) {
+      vx = (px - prevPosition.x) / dt;
+      vy = (py - prevPosition.y) / dt;
+      vz = (pz - prevPosition.z) / dt;
+    }
+  }
+  prevPosition = { x: px, y: py, z: pz };
+  prevTime = now;
+
+  const speed = Math.sqrt(vx * vx + vy * vy + vz * vz);
+
+  // Rotation matrix -> euler + quaternion
+  const euler = rotMatToEuler(data.rotation);
+  const quat = rotMatToQuat(data.rotation);
+
+  // Rate measurement
+  msgCount++;
+  if (now - lastRateTime >= 1000) {
+    currentHz = msgCount / ((now - lastRateTime) / 1000);
+    msgCount = 0;
+    lastRateTime = now;
+  }
+
+  // Update telemetry panel
+  $('t-x').textContent  = fmt(px);
+  $('t-y').textContent  = fmt(py);
+  $('t-z').textContent  = fmt(pz);
+  $('t-vx').textContent = fmt(vx, 4);
+  $('t-vy').textContent = fmt(vy, 4);
+  $('t-vz').textContent = fmt(vz, 4);
+  $('t-speed').textContent = fmt(speed, 4);
+  $('t-roll').textContent  = fmt(euler.roll, 1) + '\u00B0';
+  $('t-pitch').textContent = fmt(euler.pitch, 1) + '\u00B0';
+  $('t-yaw').textContent   = fmt(euler.yaw, 1) + '\u00B0';
+
+  $('t-armed').textContent = '—';
+  $('t-armed').className = 'value';
+  $('t-mode').innerHTML = '<span class="mode-badge">QTM LIVE</span>';
+  $('t-batt').textContent = '—';
+  $('t-hz').textContent = currentHz.toFixed(1);
+  $('t-latency').textContent = '—';
+
+  // Status indicator
+  const statusEl = $('flight-status');
+  const statusTextEl = $('flight-status-text');
+  statusEl.classList.remove('status-ground', 'status-moving', 'status-static');
+  if (pz < 0.1) {
+    statusEl.classList.add('status-ground');
+    statusTextEl.textContent = 'GROUND';
+  } else if (speed > 0.05) {
+    statusEl.classList.add('status-moving');
+    statusTextEl.textContent = 'MOVING';
+  } else {
+    statusEl.classList.add('status-static');
+    statusTextEl.textContent = 'HOVER';
+  }
+
+  // Update 3D drone
+  droneGroup.position.set(px, py, pz);
+  droneGroup.quaternion.set(quat.qx, quat.qy, quat.qz, quat.qw);
+
+  // Shadow
+  shadowMesh.position.set(px, py, 0.001);
+  const shadowScale = Math.max(0.3, 1.0 - pz * 0.3);
+  shadowMesh.scale.set(shadowScale, shadowScale, 1);
+  shadowMat.opacity = Math.max(0.05, 0.25 - pz * 0.08);
+
+  // Trajectory
+  addTrajectoryPoint(px, py, pz);
+  trajectoryLine.visible = showTrajectory;
+
+  // Store for routine engine
+  lastTelemetry = {
+    position: { x: px, y: py, z: pz },
+    velocity: { vx, vy, vz },
+    orientation: quat,
+    armed: false,
+    mode: 'QTM',
+    battery: 0,
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+//  QTM HTTP POLLING
+// ══════════════════════════════════════════════════════════════
+async function pollQtm() {
+  if (simMode) return;
+  try {
+    const resp = await fetch(CONFIG.qtmUrl);
+    const data = await resp.json();
+    if (!qtmConnected) {
+      qtmConnected = true;
+      const connEl = $('conn-status');
+      connEl.className = 'conn-ok';
+      connEl.textContent = 'QTM CONNECTED';
+    }
+    processQtmData(data);
+  } catch (e) {
+    if (qtmConnected) {
+      qtmConnected = false;
+      const connEl = $('conn-status');
+      connEl.className = 'conn-fail';
+      connEl.textContent = 'QTM DISCONNECTED';
+    }
+  }
+}
+
+function startQtmPolling() {
+  stopQtmPolling();
+  qtmPollTimer = setInterval(pollQtm, CONFIG.qtmPollMs);
+  pollQtm(); // first call immediately
+}
+
+function stopQtmPolling() {
+  if (qtmPollTimer !== null) {
+    clearInterval(qtmPollTimer);
+    qtmPollTimer = null;
+  }
+}
+// ══════════════════════════════════════════════════════════════
+//  SIM TELEMETRY PROCESSING (used only in sim mode)
 // ══════════════════════════════════════════════════════════════
 function processTelemetry(data) {
   lastTelemetry = data;
@@ -1020,56 +1215,13 @@ function processTelemetry(data) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  WEBSOCKET CONNECTION
+//  CONNECTION (QTM HTTP polling replaces old WebSocket)
 // ══════════════════════════════════════════════════════════════
-function connectWs() {
-  if (simMode) return;
-
-  const connEl = $('conn-status');
-  try {
-    ws = new WebSocket(CONFIG.wsUrl);
-  } catch (e) {
-    scheduleReconnect();
-    return;
-  }
-
-  ws.onopen = () => {
-    connEl.className = 'conn-ok';
-    connEl.textContent = 'CONNECTED';
-    reconnectDelay = CONFIG.reconnectBaseDelay;
-  };
-
-  ws.onmessage = evt => {
-    try {
-      const data = JSON.parse(evt.data);
-      processTelemetry(data);
-    } catch (e) {}
-  };
-
-  ws.onclose = () => {
-    connEl.className = 'conn-fail';
-    connEl.textContent = 'DISCONNECTED';
-    ws = null;
-    scheduleReconnect();
-  };
-
-  ws.onerror = () => { ws.close(); };
-}
-
-function scheduleReconnect() {
-  if (simMode) return;
-  clearTimeout(reconnectTimer);
-  reconnectTimer = setTimeout(() => {
-    connectWs();
-    reconnectDelay = Math.min(reconnectDelay * 1.5, CONFIG.reconnectMaxDelay);
-  }, reconnectDelay);
-}
+// QTM polling is started in init() and stopped when sim mode is on.
+// Legacy wsSend kept for command buttons (no-op when not using WS).
 
 function wsSend(obj) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(obj));
-    return true;
-  }
+  // Commands not supported in QTM-only mode
   return false;
 }
 
@@ -1509,21 +1661,24 @@ function toggleSimMode() {
   const connEl = $('conn-status');
 
   if (simMode) {
-    if (ws) { ws.onclose = null; ws.close(); ws = null; }
-    clearTimeout(reconnectTimer);
+    stopQtmPolling();
     connEl.className = 'conn-sim';
     connEl.textContent = 'SIM MODE';
     clearTrajectory();
     stopRoutine();
     sim.reset();
+    prevPosition = null;
+    prevTime = null;
     startSimulation();
     feedback('Sim mode ON — use ARM → TAKEOFF to fly');
   } else {
     stopSimulation();
     connEl.className = 'conn-fail';
-    connEl.textContent = 'DISCONNECTED';
-    connectWs();
-    feedback('Sim mode OFF');
+    connEl.textContent = 'QTM DISCONNECTED';
+    prevPosition = null;
+    prevTime = null;
+    startQtmPolling();
+    feedback('Sim mode OFF — polling QTM');
   }
 }
 
@@ -1762,7 +1917,7 @@ function animate() {
 function init() {
   onResize();
   updateCameraFromOrbit();
-  connectWs();
+  startQtmPolling();
   animate();
 }
 
