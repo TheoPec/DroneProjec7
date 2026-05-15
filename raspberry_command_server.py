@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 from aiohttp import web
 
@@ -34,26 +35,28 @@ class MavlinkMotorOutput:
         self.baud = baud
         self.master = None
         self._stabilize_warned = False
+        self._lock = threading.RLock()
 
     def connect(self):
         if mavutil is None:
             print("[MAVLINK] pymavlink is not installed")
             return False
 
-        try:
-            print(f"[MAVLINK] Connecting on {self.port} @ {self.baud} baud")
-            self.master = mavutil.mavlink_connection(self.port, baud=self.baud)
-            heartbeat = self.master.wait_heartbeat(timeout=5)
-            if heartbeat is None:
+        with self._lock:
+            try:
+                print(f"[MAVLINK] Connecting on {self.port} @ {self.baud} baud")
+                self.master = mavutil.mavlink_connection(self.port, baud=self.baud)
+                heartbeat = self.master.wait_heartbeat(timeout=5)
+                if heartbeat is None:
+                    self.master = None
+                    print("[MAVLINK] Pixhawk heartbeat timeout")
+                    return False
+                print("Pixhawk connected")
+                return True
+            except Exception as exc:
                 self.master = None
-                print("[MAVLINK] Pixhawk heartbeat timeout")
+                print(f"[MAVLINK] Pixhawk connection failed: {exc}")
                 return False
-            print("Pixhawk connected")
-            return True
-        except Exception as exc:
-            self.master = None
-            print(f"[MAVLINK] Pixhawk connection failed: {exc}")
-            return False
 
     def is_connected(self):
         return self.master is not None
@@ -72,21 +75,23 @@ class MavlinkMotorOutput:
                 self._stabilize_warned = True
 
     def arm(self):
-        self._require_connection()
-        self.master.arducopter_arm()
+        with self._lock:
+            self._require_connection()
+            self.master.arducopter_arm()
 
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            self.master.wait_heartbeat(timeout=0.5)
-            if self.master.motors_armed():
-                return
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                self.master.wait_heartbeat(timeout=0.5)
+                if self.master.motors_armed():
+                    return
 
         raise RuntimeError("pixhawk arm failed")
 
     def disarm(self):
-        self.stop()
-        self._require_connection()
-        self.master.arducopter_disarm()
+        with self._lock:
+            self.stop()
+            self._require_connection()
+            self.master.arducopter_disarm()
 
     def _send_throttle_pwm(self, throttle_pwm):
         self._require_connection()
@@ -104,16 +109,22 @@ class MavlinkMotorOutput:
         )
 
     def stop(self):
-        self._send_throttle_pwm(PWM_MIN)
-        print(f"[MAVLINK MOTOR OUTPUT] power=0% pwm={PWM_MIN}")
+        with self._lock:
+            for _ in range(3):
+                self._send_throttle_pwm(PWM_MIN)
+                time.sleep(0.02)
+            print(f"[MAVLINK MOTOR OUTPUT] power=0% pwm={PWM_MIN}")
 
     def set_power(self, power):
-        self._try_stabilize_mode()
-        safe_power = max(0, min(MAX_MOTOR_POWER, int(power)))
-        throttle_pwm = PWM_MIN + int((safe_power / 100.0) * 1000)
-        throttle_pwm = max(PWM_MIN, min(PWM_MAX_TEST, throttle_pwm))
-        self._send_throttle_pwm(throttle_pwm)
-        print(f"[MAVLINK MOTOR OUTPUT] power={safe_power}% pwm={throttle_pwm}")
+        with self._lock:
+            self._try_stabilize_mode()
+            safe_power = max(0, min(MAX_MOTOR_POWER, int(power)))
+            throttle_pwm = PWM_MIN + int((safe_power / 100.0) * 1000)
+            throttle_pwm = max(PWM_MIN, min(PWM_MAX_TEST, throttle_pwm))
+            for _ in range(2):
+                self._send_throttle_pwm(throttle_pwm)
+                time.sleep(0.02)
+            print(f"[MAVLINK MOTOR OUTPUT] power={safe_power}% pwm={throttle_pwm}")
 
 
 motor_output = MavlinkMotorOutput(MAVLINK_PORT, MAVLINK_BAUD)
@@ -124,7 +135,7 @@ state = {
     "motor_power": 0,
     "pixhawk_connected": False,
 }
-last_command_time = time.monotonic()
+last_motor_command_time = 0.0
 
 
 def clamp_motor_power(power):
@@ -150,30 +161,36 @@ def safe_stop_motors_now():
         state["motor_power"] = 0
 
 
+async def run_blocking(func, *args):
+    return await asyncio.to_thread(func, *args)
+
+
 async def arm():
-    motor_output.arm()
+    await run_blocking(motor_output.arm)
     state["armed"] = True
     state["mode"] = "ARMED"
 
 
 async def disarm():
-    motor_output.disarm()
+    await run_blocking(motor_output.disarm)
     state["armed"] = False
     state["mode"] = "DISARMED"
     state["motor_power"] = 0
 
 
 async def stop_motors():
-    stop_motors_now()
+    await run_blocking(stop_motors_now)
     state["mode"] = "ARMED" if state["armed"] else "DISARMED"
 
 
 async def motor_test(power):
+    global last_motor_command_time
     if not state["armed"]:
-        safe_stop_motors_now()
+        await run_blocking(safe_stop_motors_now)
         state["mode"] = "DISARMED"
         return
-    set_motor_power(power)
+    await run_blocking(set_motor_power, power)
+    last_motor_command_time = time.monotonic()
     state["mode"] = "MOTOR_TEST"
 
 
@@ -182,8 +199,6 @@ async def noop_mode(mode):
 
 
 async def handle_command(request):
-    global last_command_time
-    last_command_time = time.monotonic()
     state["pixhawk_connected"] = motor_output.is_connected()
 
     try:
@@ -216,8 +231,8 @@ async def handle_command(request):
                 status=400,
             )
     except Exception as exc:
-        if command == "motor_test":
-            safe_stop_motors_now()
+        if command in ("motor_test", "stop_motors", "land", "disarm"):
+            await run_blocking(safe_stop_motors_now)
         state["pixhawk_connected"] = motor_output.is_connected()
         return web.json_response({"ok": False, "error": str(exc), "state": state}, status=400)
 
@@ -228,9 +243,9 @@ async def handle_command(request):
 async def watchdog():
     while True:
         await asyncio.sleep(0.05)
-        if state["motor_power"] > 0 and time.monotonic() - last_command_time > MOTOR_TIMEOUT_SECONDS:
+        if state["motor_power"] > 0 and time.monotonic() - last_motor_command_time > MOTOR_TIMEOUT_SECONDS:
             print("[SAFETY] Command timeout: stopping motors")
-            safe_stop_motors_now()
+            await run_blocking(safe_stop_motors_now)
             state["mode"] = "TIMEOUT_STOP"
 
 
@@ -259,8 +274,8 @@ async def main():
     state["armed"] = False
     state["mode"] = "DISARMED"
     state["motor_power"] = 0
-    state["pixhawk_connected"] = motor_output.connect()
-    safe_stop_motors_now()
+    state["pixhawk_connected"] = await run_blocking(motor_output.connect)
+    await run_blocking(safe_stop_motors_now)
 
     app = web.Application(middlewares=[cors_middleware])
     app.router.add_post("/command", handle_command)

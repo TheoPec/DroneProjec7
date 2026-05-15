@@ -583,6 +583,7 @@ const CONFIG = {
   defaultQtmHost: `${location.hostname || 'localhost'}:8080`,
   defaultCmdHost: `${location.hostname || 'localhost'}:8081`,
   qtmPollMs: 50,    // poll every 50ms (~20Hz)
+  motorKeepaliveMs: 300,
   maxTrajectoryPoints: 1000,
   simHz: 50,
   batteryMin: 13.2,
@@ -601,6 +602,8 @@ let qtmPollTimer = null;
 let qtmConnected = false;
 let prevPosition = null;
 let prevTime = null;
+let motorTestTimer = null;
+let motorTestInFlight = false;
 let realtimeState = {
   armed: false,
   mode: 'QTM',
@@ -1407,8 +1410,11 @@ async function motorArm() {
 }
 
 async function motorDisarm() {
+  stopMotorKeepalive();
   try {
     await sendCommand('disarm');
+    $('motor-power').value = 0;
+    updateMotorPowerLabel();
     feedback('Motor test disarmed');
   } catch (e) {
     feedback(`DISARM failed: ${e.message}`);
@@ -1416,6 +1422,7 @@ async function motorDisarm() {
 }
 
 async function stopMotors() {
+  stopMotorKeepalive();
   try {
     await sendCommand('stop_motors');
     $('motor-power').value = 0;
@@ -1426,16 +1433,54 @@ async function stopMotors() {
   }
 }
 
-async function sendMotorPower() {
+function getSafeMotorPower() {
   const raw = parseInt($('motor-power').value, 10) || 0;
-  const power = Math.max(0, Math.min(30, raw));
+  return Math.max(0, Math.min(30, raw));
+}
+
+async function sendMotorPowerOnce(showFeedback = false) {
+  if (motorTestInFlight) return;
+  const power = getSafeMotorPower();
   $('motor-power').value = power;
   updateMotorPowerLabel();
+
+  motorTestInFlight = true;
   try {
     await sendCommand('motor_test', { power });
-    feedback(`Motor power sent: ${power}%`);
+    if (showFeedback) feedback(`Motor power sent: ${power}%`);
   } catch (e) {
+    stopMotorKeepalive();
     feedback(`MOTOR TEST failed: ${e.message}`);
+  } finally {
+    motorTestInFlight = false;
+  }
+}
+
+function startMotorKeepalive() {
+  stopMotorKeepalive();
+  motorTestTimer = setInterval(() => {
+    if (getSafeMotorPower() <= 0) {
+      stopMotorKeepalive();
+      return;
+    }
+    sendMotorPowerOnce(false);
+  }, CONFIG.motorKeepaliveMs);
+}
+
+function stopMotorKeepalive() {
+  if (motorTestTimer !== null) {
+    clearInterval(motorTestTimer);
+    motorTestTimer = null;
+  }
+}
+
+async function sendMotorPower() {
+  const power = getSafeMotorPower();
+  await sendMotorPowerOnce(true);
+  if (power > 0) {
+    startMotorKeepalive();
+  } else {
+    stopMotorKeepalive();
   }
 }
 
@@ -2180,6 +2225,7 @@ function init() {
   updateMotorPowerLabel();
   applyHostConfig();
   refreshRaspberryStatus();
+  setInterval(refreshRaspberryStatus, 2000);
   onResize();
   updateCameraFromOrbit();
   animate();
