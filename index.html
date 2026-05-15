@@ -216,7 +216,23 @@ html, body {
   text-align: center;
 }
 
+#command-bar input[type="text"] {
+  width: 130px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
 #command-bar input[type="number"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+#command-bar input[type="text"]:focus {
   outline: none;
   border-color: var(--accent);
 }
@@ -341,6 +357,44 @@ html, body {
   transition: width .3s, background .5s;
 }
 
+.motor-test-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.motor-warning {
+  color: var(--red);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.motor-power-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.motor-power-row input[type="range"] {
+  flex: 1;
+}
+
+.motor-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.motor-buttons .cmd-btn {
+  padding: 6px 9px;
+  font-size: 11px;
+}
+
+.raspi-ok { color: var(--green) !important; }
+.raspi-fail { color: var(--red) !important; }
+.raspi-unknown { color: var(--orange) !important; }
+
 /* Mode badge */
 .mode-badge {
   display: inline-block;
@@ -416,6 +470,23 @@ html, body {
       <div class="telem-row"><span class="label">Hz</span><span class="value" id="t-hz">—</span></div>
       <div class="telem-row"><span class="label">Latency</span><span class="value" id="t-latency">—</span></div>
     </div>
+
+    <!-- Motor test -->
+    <h2>Motor Test</h2>
+    <div class="motor-test-panel">
+      <div class="motor-warning">TEST ONLY WITHOUT PROPELLERS</div>
+      <div class="telem-row"><span class="label">Raspberry</span><span class="value raspi-unknown" id="raspi-status">UNKNOWN</span></div>
+      <div class="telem-row"><span class="label">Motor Power</span><span class="value" id="motor-power-label">0%</span></div>
+      <div class="motor-power-row">
+        <input type="range" id="motor-power" min="0" max="100" value="0" step="1" oninput="updateMotorPowerLabel()">
+      </div>
+      <div class="motor-buttons">
+        <button class="cmd-btn cmd-btn-green" onclick="motorArm()">ARM</button>
+        <button class="cmd-btn cmd-btn-red" onclick="motorDisarm()">DISARM</button>
+        <button class="cmd-btn cmd-btn-red" onclick="stopMotors()">STOP MOTORS</button>
+        <button class="cmd-btn cmd-btn-orange" onclick="sendMotorPower()">SEND MOTOR POWER</button>
+      </div>
+    </div>
   </div>
 
   <!-- ── CENTER: 3D Viewport ────────────────────────────────── -->
@@ -488,6 +559,12 @@ html, body {
     <span class="routine-progress" id="routine-progress"></span>
 
     <div class="separator"></div>
+
+    <label>QTM:</label><input type="text" id="qtm-host" placeholder="host:8080">
+    <label>CMD:</label><input type="text" id="cmd-host" placeholder="host:8081">
+    <button class="cmd-btn cmd-btn-blue" id="apply-hosts" onclick="applyHostConfig()">APPLY</button>
+
+    <div class="separator"></div>
     <label id="target-feedback" style="color:var(--accent);font-size:11px;"></label>
   </div>
 
@@ -503,10 +580,9 @@ html, body {
 //  CONFIGURATION
 // ══════════════════════════════════════════════════════════════
 const CONFIG = {
-  qtmUrl: `http://${location.hostname || 'localhost'}:8080`,
+  defaultQtmHost: `${location.hostname || 'localhost'}:8080`,
+  defaultCmdHost: `${location.hostname || 'localhost'}:8081`,
   qtmPollMs: 50,    // poll every 50ms (~20Hz)
-  reconnectBaseDelay: 1000,
-  reconnectMaxDelay:  10000,
   maxTrajectoryPoints: 1000,
   simHz: 50,
   batteryMin: 13.2,
@@ -516,9 +592,6 @@ const CONFIG = {
 // ══════════════════════════════════════════════════════════════
 //  STATE
 // ══════════════════════════════════════════════════════════════
-let ws = null;
-let reconnectDelay = CONFIG.reconnectBaseDelay;
-let reconnectTimer = null;
 let simMode = false;
 let simInterval = null;
 let showTrajectory = true;
@@ -528,6 +601,11 @@ let qtmPollTimer = null;
 let qtmConnected = false;
 let prevPosition = null;
 let prevTime = null;
+let realtimeState = {
+  armed: false,
+  mode: 'QTM',
+  battery: 0,
+};
 
 // Rate measurement
 let msgCount = 0;
@@ -1050,10 +1128,10 @@ function processQtmData(data) {
   $('t-pitch').textContent = fmt(euler.pitch, 1) + '\u00B0';
   $('t-yaw').textContent   = fmt(euler.yaw, 1) + '\u00B0';
 
-  $('t-armed').textContent = '—';
-  $('t-armed').className = 'value';
-  $('t-mode').innerHTML = '<span class="mode-badge">QTM LIVE</span>';
-  $('t-batt').textContent = '—';
+  $('t-armed').textContent = realtimeState.armed ? 'YES' : 'NO';
+  $('t-armed').className = 'value ' + (realtimeState.armed ? 'armed-true' : 'armed-false');
+  $('t-mode').innerHTML = `<span class="mode-badge">${realtimeState.mode}</span>`;
+  $('t-batt').textContent = realtimeState.battery > 0 ? fmt(realtimeState.battery, 2) + ' V' : '—';
   $('t-hz').textContent = currentHz.toFixed(1);
   $('t-latency').textContent = '—';
 
@@ -1091,9 +1169,9 @@ function processQtmData(data) {
     position: { x: px, y: py, z: pz },
     velocity: { vx, vy, vz },
     orientation: quat,
-    armed: false,
-    mode: 'QTM',
-    battery: 0,
+    armed: realtimeState.armed,
+    mode: realtimeState.mode,
+    battery: realtimeState.battery,
   };
 }
 
@@ -1103,7 +1181,8 @@ function processQtmData(data) {
 async function pollQtm() {
   if (simMode) return;
   try {
-    const resp = await fetch(CONFIG.qtmUrl);
+    const resp = await fetch(getQtmUrl(), { cache: 'no-store' });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     if (!qtmConnected) {
       qtmConnected = true;
@@ -1215,14 +1294,149 @@ function processTelemetry(data) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  CONNECTION (QTM HTTP polling replaces old WebSocket)
+//  CONNECTION / COMMAND API
 // ══════════════════════════════════════════════════════════════
-// QTM polling is started in init() and stopped when sim mode is on.
-// Legacy wsSend kept for command buttons (no-op when not using WS).
+function getStoredHost(key, fallback) {
+  const value = localStorage.getItem(key);
+  return value ? value.trim() : fallback;
+}
 
-function wsSend(obj) {
-  // Commands not supported in QTM-only mode
-  return false;
+function setStoredHost(key, value) {
+  localStorage.setItem(key, value);
+}
+
+function normalizeHost(value, fallback) {
+  const raw = (value || '').trim();
+  if (!raw) return fallback;
+  return raw.replace(/^https?:\/\//i, '').replace(/\/$/, '');
+}
+
+function getQtmHost() {
+  return normalizeHost($('qtm-host').value, CONFIG.defaultQtmHost);
+}
+
+function getCmdHost() {
+  return normalizeHost($('cmd-host').value, CONFIG.defaultCmdHost);
+}
+
+function getQtmUrl() {
+  return `http://${getQtmHost()}/`;
+}
+
+function getCommandUrl() {
+  return `http://${getCmdHost()}/command`;
+}
+
+function applyHostConfig() {
+  $('qtm-host').value = getQtmHost();
+  $('cmd-host').value = getCmdHost();
+  setStoredHost('qtm-host', $('qtm-host').value);
+  setStoredHost('cmd-host', $('cmd-host').value);
+
+  if (!simMode) {
+    qtmConnected = false;
+    const connEl = $('conn-status');
+    connEl.className = 'conn-fail';
+    connEl.textContent = 'QTM DISCONNECTED';
+    startQtmPolling();
+  }
+
+  feedback(`QTM ${$('qtm-host').value} | CMD ${$('cmd-host').value}`);
+}
+
+function applyCommandState(data = {}) {
+  if (typeof data.armed === 'boolean') realtimeState.armed = data.armed;
+  if (typeof data.mode === 'string' && data.mode) realtimeState.mode = data.mode;
+  if (typeof data.battery === 'number') realtimeState.battery = data.battery;
+  if (typeof data.motor_power === 'number') {
+    $('motor-power-label').textContent = `${data.motor_power}%`;
+  }
+}
+
+function setRaspberryStatus(connected) {
+  const el = $('raspi-status');
+  if (!el) return;
+  el.textContent = connected ? 'CONNECTED' : 'DISCONNECTED';
+  el.className = 'value ' + (connected ? 'raspi-ok' : 'raspi-fail');
+}
+
+async function sendCommand(command, payload = {}) {
+  let resp;
+  let data = {};
+  try {
+    resp = await fetch(getCommandUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command, ...payload }),
+    });
+    data = await resp.json().catch(() => ({}));
+  } catch (e) {
+    setRaspberryStatus(false);
+    throw e;
+  }
+  if (!resp.ok || data.ok === false) {
+    setRaspberryStatus(false);
+    throw new Error(data.error || `HTTP ${resp.status}`);
+  }
+  setRaspberryStatus(true);
+  applyCommandState(data.state);
+  return data;
+}
+
+async function refreshRaspberryStatus() {
+  try {
+    await sendCommand('status');
+  } catch (e) {
+    setRaspberryStatus(false);
+  }
+}
+
+function updateMotorPowerLabel() {
+  const raw = parseInt($('motor-power').value, 10) || 0;
+  const safePower = Math.max(0, Math.min(30, raw));
+  $('motor-power-label').textContent = `${safePower}%`;
+}
+
+async function motorArm() {
+  try {
+    await sendCommand('arm');
+    feedback('Motor test armed');
+  } catch (e) {
+    feedback(`ARM failed: ${e.message}`);
+  }
+}
+
+async function motorDisarm() {
+  try {
+    await sendCommand('disarm');
+    feedback('Motor test disarmed');
+  } catch (e) {
+    feedback(`DISARM failed: ${e.message}`);
+  }
+}
+
+async function stopMotors() {
+  try {
+    await sendCommand('stop_motors');
+    $('motor-power').value = 0;
+    updateMotorPowerLabel();
+    feedback('Motors stopped');
+  } catch (e) {
+    feedback(`STOP failed: ${e.message}`);
+  }
+}
+
+async function sendMotorPower() {
+  const raw = parseInt($('motor-power').value, 10) || 0;
+  const power = Math.max(0, Math.min(30, raw));
+  $('motor-power').value = power;
+  updateMotorPowerLabel();
+  try {
+    await sendCommand('motor_test', { power });
+    feedback(`Motor power sent: ${power}%`);
+  } catch (e) {
+    feedback(`MOTOR TEST failed: ${e.message}`);
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1232,44 +1446,64 @@ function feedback(msg) {
   $('target-feedback').textContent = msg;
 }
 
-function cmdArm() {
+async function cmdArm() {
   if (simMode) {
     sim.arm();
     feedback('Armed (sim)');
   } else {
-    feedback(wsSend({ command: 'arm' }) ? 'ARM sent' : 'Not connected');
+    try {
+      await sendCommand('arm');
+      feedback('ARM sent');
+    } catch (e) {
+      feedback(`ARM failed: ${e.message}`);
+    }
   }
 }
 
-function cmdDisarm() {
+async function cmdDisarm() {
   if (simMode) {
     sim.disarm();
     feedback('Disarmed (sim)');
   } else {
-    feedback(wsSend({ command: 'disarm' }) ? 'DISARM sent' : 'Not connected');
+    try {
+      await sendCommand('disarm');
+      feedback('DISARM sent');
+    } catch (e) {
+      feedback(`DISARM failed: ${e.message}`);
+    }
   }
 }
 
-function cmdTakeoff() {
+async function cmdTakeoff() {
   const z = parseFloat($('cmd-z').value) || 1.0;
   if (simMode) {
     sim.takeoff(z);
     feedback(`Takeoff z=${z.toFixed(1)} (sim)`);
   } else {
-    feedback(wsSend({ command: 'takeoff', z }) ? `TAKEOFF z=${z.toFixed(1)}` : 'Not connected');
+    try {
+      await sendCommand('takeoff', { z });
+      feedback(`TAKEOFF z=${z.toFixed(1)}`);
+    } catch (e) {
+      feedback(`TAKEOFF failed: ${e.message}`);
+    }
   }
 }
 
-function cmdLand() {
+async function cmdLand() {
   if (simMode) {
     sim.land();
     feedback('Landing (sim)');
   } else {
-    feedback(wsSend({ command: 'land' }) ? 'LAND sent' : 'Not connected');
+    try {
+      await sendCommand('land');
+      feedback('LAND sent');
+    } catch (e) {
+      feedback(`LAND failed: ${e.message}`);
+    }
   }
 }
 
-function sendTarget() {
+async function sendTarget() {
   const x = parseFloat($('cmd-x').value) || 0;
   const y = parseFloat($('cmd-y').value) || 0;
   const z = parseFloat($('cmd-z').value) || 1;
@@ -1281,8 +1515,12 @@ function sendTarget() {
     sim.goTo(x, y, z);
     feedback(`Go to (${x}, ${y}, ${z}) (sim)`);
   } else {
-    const ok = wsSend({ command: 'set_target', x, y, z });
-    feedback(ok ? `Sent: ${x}, ${y}, ${z}` : 'Not connected — target shown locally');
+    try {
+      await sendCommand('set_target', { x, y, z });
+      feedback(`Sent: ${x}, ${y}, ${z}`);
+    } catch (e) {
+      feedback(`SET TARGET failed: ${e.message}`);
+    }
   }
 }
 
@@ -1292,7 +1530,7 @@ function sendTarget() {
 /*
  * A routine is a sequence of waypoints [{x,y,z}, ...].
  * The engine auto-executes: arm → takeoff → fly waypoints → land.
- * Works in both sim mode and real mode (sends WS commands).
+ * Works in both sim mode and real mode (sends HTTP commands).
  */
 let routineActive  = false;
 let routineWaypoints = [];
@@ -1484,11 +1722,6 @@ const ROUTINES = {
 function runRoutine(name) {
   closeRoutineMenu();
 
-  if (!simMode && (!ws || ws.readyState !== WebSocket.OPEN)) {
-    feedback('Connect or enable SIM mode first');
-    return;
-  }
-
   const routine = ROUTINES[name];
   if (!routine) return;
 
@@ -1510,10 +1743,16 @@ function runRoutine(name) {
 
   // Kick off arming immediately
   if (simMode) sim.arm();
-  else wsSend({ command: 'arm' });
+  else {
+    sendCommand('arm')
+      .catch(e => {
+        feedback(`Routine arm failed: ${e.message}`);
+        stopRoutine();
+      });
+  }
 }
 
-function routineTick() {
+async function routineTick() {
   if (!routineActive) { clearInterval(routineCheckInterval); return; }
 
   const telem = lastTelemetry;
@@ -1528,7 +1767,14 @@ function routineTick() {
         routinePhase = 'takeoff';
         const firstZ = routineWaypoints[0] ? routineWaypoints[0].z : 1.0;
         if (simMode) sim.takeoff(firstZ);
-        else wsSend({ command: 'takeoff', z: firstZ });
+        else {
+          try {
+            await sendCommand('takeoff', { z: firstZ });
+          } catch (e) {
+            feedback(`Routine takeoff failed: ${e.message}`);
+            stopRoutine();
+          }
+        }
       }
       break;
 
@@ -1558,10 +1804,18 @@ function routineTick() {
           // All waypoints done → land
           routinePhase = 'landing';
           if (simMode) sim.land();
-          else wsSend({ command: 'land' });
+          else {
+            try {
+              await sendCommand('land');
+            } catch (e) {
+              feedback(`Routine land failed: ${e.message}`);
+              stopRoutine();
+              return;
+            }
+          }
           feedback('Routine complete — landing');
         } else {
-          sendRoutineWaypoint();
+          await sendRoutineWaypoint();
         }
       }
       break;
@@ -1576,7 +1830,7 @@ function routineTick() {
   }
 }
 
-function sendRoutineWaypoint() {
+async function sendRoutineWaypoint() {
   const wp = routineWaypoints[routineIndex];
   if (!wp) return;
 
@@ -1585,7 +1839,13 @@ function sendRoutineWaypoint() {
   if (simMode) {
     sim.goTo(wp.x, wp.y, wp.z);
   } else {
-    wsSend({ command: 'set_target', x: wp.x, y: wp.y, z: wp.z });
+    try {
+      await sendCommand('set_target', { x: wp.x, y: wp.y, z: wp.z });
+    } catch (e) {
+      feedback(`Routine waypoint failed: ${e.message}`);
+      stopRoutine();
+      return;
+    }
   }
 
   feedback(`WP ${routineIndex + 1}/${routineWaypoints.length}: (${wp.x.toFixed(1)}, ${wp.y.toFixed(1)}, ${wp.z.toFixed(1)})`);
@@ -1915,9 +2175,13 @@ function animate() {
 //  INIT – no auto-sim; user activates manually via SIM button
 // ══════════════════════════════════════════════════════════════
 function init() {
+  $('qtm-host').value = getStoredHost('qtm-host', CONFIG.defaultQtmHost);
+  $('cmd-host').value = getStoredHost('cmd-host', CONFIG.defaultCmdHost);
+  updateMotorPowerLabel();
+  applyHostConfig();
+  refreshRaspberryStatus();
   onResize();
   updateCameraFromOrbit();
-  startQtmPolling();
   animate();
 }
 

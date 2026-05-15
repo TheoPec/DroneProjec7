@@ -1,14 +1,19 @@
 """
     QTM 6DOF streaming server
-    - Connects to QTM, tracks rigid body "Fatima"
+    - Connects to QTM, tracks a configured rigid body
     - Serves latest position + rotation as JSON on http://0.0.0.0:8080
     - Any PC on the network can GET http://<this-pc-ip>:8080 to get the data
 
     (start QTM first, load file, Play->Play with Real-Time output)
+
+    Optional environment variables:
+    - QTM_HOST=<ip-or-hostname>
+    - QTM_BODY=<rigid-body-name>
 """
 
 import asyncio
 import json
+import os
 import xml.etree.ElementTree as ET
 from threading import Lock
 from aiohttp import web
@@ -16,6 +21,8 @@ from aiohttp import web
 import qtm_rt
 
 SERVER_PORT = 8080
+QTM_HOST = os.environ.get("QTM_HOST", "127.0.0.1")
+BODY_NAME = os.environ.get("QTM_BODY", "Fatima")
 
 # Shared state: latest data from QTM
 _lock = Lock()
@@ -37,7 +44,7 @@ def on_packet(packet):
 
     frame = packet.framenumber
 
-    # --- 6DOF Rigid Body "Fatima" ---
+    # --- 6DOF rigid body ---
     header, bodies = packet.get_6d()
 
     position = None
@@ -63,7 +70,7 @@ def on_packet(packet):
 # ---- HTTP server ----
 
 async def handle_get(request):
-    """Return latest Fatima data as JSON"""
+    """Return latest rigid body data as JSON"""
     with _lock:
         data = json.dumps(_latest)
     return web.Response(
@@ -89,12 +96,12 @@ async def start_http_server():
 # ---- QTM connection ----
 
 async def setup():
-    """Connect to QTM, find Fatima, start streaming"""
+    """Connect to QTM, find the configured rigid body, start streaming"""
     global FATIMA_INDEX
 
-    connection = await qtm_rt.connect("127.0.0.1")
+    connection = await qtm_rt.connect(QTM_HOST)
     if connection is None:
-        print("Failed to connect to QTM")
+        print("Failed to connect to QTM at {}".format(QTM_HOST))
         return
 
     # Get 6DOF body settings to find the index of "Fatima"
@@ -108,11 +115,11 @@ async def setup():
 
     print("Available rigid bodies: {}".format(body_names))
 
-    if "Fatima" in body_names:
-        FATIMA_INDEX = body_names.index("Fatima")
-        print("Found 'Fatima' at index {}".format(FATIMA_INDEX))
+    if BODY_NAME in body_names:
+        FATIMA_INDEX = body_names.index(BODY_NAME)
+        print("Found '{}' at index {}".format(BODY_NAME, FATIMA_INDEX))
     else:
-        print("ERROR: Rigid body 'Fatima' not found in QTM!")
+        print("ERROR: Rigid body '{}' not found in QTM!".format(BODY_NAME))
         print("Available bodies: {}".format(body_names))
         await connection.disconnect()
         return
