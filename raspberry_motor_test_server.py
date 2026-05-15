@@ -24,7 +24,7 @@ class MavlinkMotorOutput:
     TEST ONLY WITHOUT PROPELLERS.
 
     This class sends only basic MAVLink commands for safe bench motor tests.
-    It does not implement takeoff, navigation, autonomous flight, or Qualisys feedback.
+    It does not implement takeoff, landing, navigation, autonomous flight, or Qualisys feedback.
 
     Motor power is sent with RC channel override on throttle channel 3.
     Keep propellers removed and keep MAX_MOTOR_POWER low during first tests.
@@ -34,7 +34,6 @@ class MavlinkMotorOutput:
         self.port = port
         self.baud = baud
         self.master = None
-        self._stabilize_warned = False
         self._lock = threading.RLock()
 
     def connect(self):
@@ -64,15 +63,6 @@ class MavlinkMotorOutput:
     def _require_connection(self):
         if not self.is_connected():
             raise RuntimeError("pixhawk not connected")
-
-    def _try_stabilize_mode(self):
-        self._require_connection()
-        try:
-            self.master.set_mode_apm("STABILIZE")
-        except Exception as exc:
-            if not self._stabilize_warned:
-                print(f"[MAVLINK WARNING] Could not set STABILIZE mode: {exc}")
-                self._stabilize_warned = True
 
     def arm(self):
         with self._lock:
@@ -110,20 +100,15 @@ class MavlinkMotorOutput:
 
     def stop(self):
         with self._lock:
-            for _ in range(3):
-                self._send_throttle_pwm(PWM_MIN)
-                time.sleep(0.02)
+            self._send_throttle_pwm(PWM_MIN)
             print(f"[MAVLINK MOTOR OUTPUT] power=0% pwm={PWM_MIN}")
 
     def set_power(self, power):
         with self._lock:
-            self._try_stabilize_mode()
             safe_power = max(0, min(MAX_MOTOR_POWER, int(power)))
             throttle_pwm = PWM_MIN + int((safe_power / 100.0) * 1000)
             throttle_pwm = max(PWM_MIN, min(PWM_MAX_TEST, throttle_pwm))
-            for _ in range(2):
-                self._send_throttle_pwm(throttle_pwm)
-                time.sleep(0.02)
+            self._send_throttle_pwm(throttle_pwm)
             print(f"[MAVLINK MOTOR OUTPUT] power={safe_power}% pwm={throttle_pwm}")
 
 
@@ -194,10 +179,6 @@ async def motor_test(power):
     state["mode"] = "MOTOR_TEST"
 
 
-async def noop_mode(mode):
-    state["mode"] = mode if state["armed"] else "DISARMED"
-
-
 async def handle_command(request):
     state["pixhawk_connected"] = motor_output.is_connected()
 
@@ -219,19 +200,13 @@ async def handle_command(request):
             await stop_motors()
         elif command == "motor_test":
             await motor_test(payload.get("power", 0))
-        elif command == "takeoff":
-            await noop_mode("TAKEOFF_IGNORED")
-        elif command == "land":
-            await stop_motors()
-        elif command == "set_target":
-            await noop_mode("TARGET_IGNORED")
         else:
             return web.json_response(
                 {"ok": False, "error": f"unknown command: {command}", "state": state},
                 status=400,
             )
     except Exception as exc:
-        if command in ("motor_test", "stop_motors", "land", "disarm"):
+        if command in ("motor_test", "stop_motors", "disarm"):
             await run_blocking(safe_stop_motors_now)
         state["pixhawk_connected"] = motor_output.is_connected()
         return web.json_response({"ok": False, "error": str(exc), "state": state}, status=400)
@@ -287,8 +262,9 @@ async def main():
     await site.start()
     asyncio.create_task(watchdog())
 
-    print(f"Raspberry command server running on http://{SERVER_HOST}:{SERVER_PORT}")
+    print(f"Raspberry motor test server running on http://{SERVER_HOST}:{SERVER_PORT}")
     print("TEST ONLY WITHOUT PROPELLERS")
+    print("Allowed commands: status, arm, disarm, stop_motors, motor_test")
 
     while True:
         await asyncio.sleep(3600)

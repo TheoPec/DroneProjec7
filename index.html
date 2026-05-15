@@ -583,7 +583,7 @@ const CONFIG = {
   defaultQtmHost: `${location.hostname || 'localhost'}:8080`,
   defaultCmdHost: `${location.hostname || 'localhost'}:8081`,
   qtmPollMs: 50,    // poll every 50ms (~20Hz)
-  motorKeepaliveMs: 300,
+  motorKeepaliveMs: 33, // ~30Hz motor command keepalive
   maxTrajectoryPoints: 1000,
   simHz: 50,
   batteryMin: 13.2,
