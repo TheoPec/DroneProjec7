@@ -22,7 +22,7 @@ import qtm_rt
 
 SERVER_PORT = 8080
 QTM_HOST = os.environ.get("QTM_HOST", "127.0.0.1")
-BODY_NAME = os.environ.get("QTM_BODY", "Fatima")
+BODY_NAME = os.environ.get("QTM_BODY", "Obelix")
 
 # Shared state: latest data from QTM
 _lock = Lock()
@@ -32,14 +32,14 @@ _latest = {
     "rotation": None,
 }
 
-FATIMA_INDEX = None
+BODY_INDEX = None
 
 
 def on_packet(packet):
     """Callback function that is called everytime a data packet arrives from QTM"""
-    global FATIMA_INDEX
+    global BODY_INDEX
 
-    if FATIMA_INDEX is None:
+    if BODY_INDEX is None:
         return
 
     frame = packet.framenumber
@@ -50,8 +50,8 @@ def on_packet(packet):
     position = None
     rotation = None
 
-    if FATIMA_INDEX < len(bodies):
-        pos, rot = bodies[FATIMA_INDEX]
+    if BODY_INDEX < len(bodies):
+        pos, rot = bodies[BODY_INDEX]
         position = {"x": pos.x, "y": pos.y, "z": pos.z}
         rotation = [
             [rot.matrix[0], rot.matrix[1], rot.matrix[2]],
@@ -97,14 +97,14 @@ async def start_http_server():
 
 async def setup():
     """Connect to QTM, find the configured rigid body, start streaming"""
-    global FATIMA_INDEX
+    global BODY_INDEX
 
     connection = await qtm_rt.connect(QTM_HOST)
     if connection is None:
         print("Failed to connect to QTM at {}".format(QTM_HOST))
         return
 
-    # Get 6DOF body settings to find the index of "Fatima"
+    # Get 6DOF body settings to find the configured rigid body index.
     xml_string = await connection.get_parameters(parameters=["6d"])
     xml = ET.fromstring(xml_string)
 
@@ -116,8 +116,8 @@ async def setup():
     print("Available rigid bodies: {}".format(body_names))
 
     if BODY_NAME in body_names:
-        FATIMA_INDEX = body_names.index(BODY_NAME)
-        print("Found '{}' at index {}".format(BODY_NAME, FATIMA_INDEX))
+        BODY_INDEX = body_names.index(BODY_NAME)
+        print("Found '{}' at index {}".format(BODY_NAME, BODY_INDEX))
     else:
         print("ERROR: Rigid body '{}' not found in QTM!".format(BODY_NAME))
         print("Available bodies: {}".format(body_names))

@@ -21,6 +21,7 @@ import math
 import os
 import threading
 import time
+import traceback
 from aiohttp import ClientSession, web
 
 try:
@@ -273,6 +274,7 @@ async def vision_loop():
             except Exception as exc:
                 state["qtm_connected"] = False
                 print(f"[VISION WARNING] {exc}")
+                traceback.print_exc()
 
             now = time.monotonic()
             if now - last_rate_log >= 1.0:
